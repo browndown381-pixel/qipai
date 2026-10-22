@@ -152,8 +152,8 @@ const INITIAL_VIEW_STATE: DdzViewState = {
  * Contain-fit scale for the 1334x750 design stage: never overflows on EITHER axis.
  * (Height-only fit cropped the stage horizontally on 4:3 tablets / narrow desktop windows.)
  */
-const computeFitScale = (width: number, height: number): number =>
-  Math.min(height / DESIGN_HEIGHT, width / DESIGN_WIDTH);
+const computeFitScale = (width: number, height: number, stageWidth = DESIGN_WIDTH): number =>
+  Math.min(height / DESIGN_HEIGHT, width / stageWidth);
 
 type VirtualRotation = 0 | 90 | 270;
 
@@ -237,14 +237,18 @@ const DdzTableStage: React.FC<DdzTableViewProps & { rotationDeg: VirtualRotation
 
   const { zones, uiElementScale, tier } = measuredMetrics;
 
-  // Full-bleed virtual width: in 16:9 ratio, it is 1334. In 20:9 (ratio 2.22), it expands up to 1660px.
-  const fitScaleBase = computeFitScale(measuredMetrics.width, measuredMetrics.height);
-  const stageScale = Number(
-    (fitScaleBase * (0.985 + ((uiElementScale - 0.78) / 0.22) * 0.015)).toFixed(4)
-  );
+  // Full-bleed virtual width: in <=16:9 ratio, it is 1334. In 19.5:9~21:9, it expands up to 1660px.
+  const containerAspect =
+    measuredMetrics.height > 0
+      ? measuredMetrics.width / measuredMetrics.height
+      : DESIGN_WIDTH / DESIGN_HEIGHT;
   const virtualWidth = Math.max(
     DESIGN_WIDTH,
-    Math.min(1660, Math.round(measuredMetrics.width / (stageScale || 1)))
+    Math.min(1660, Math.round(DESIGN_HEIGHT * containerAspect))
+  );
+  const fitScaleBase = computeFitScale(measuredMetrics.width, measuredMetrics.height, virtualWidth);
+  const stageScale = Number(
+    (fitScaleBase * Math.min(1.0, 0.985 + ((uiElementScale - 0.78) / 0.22) * 0.015)).toFixed(4)
   );
 
   // Synchronize PixiJS stage coordinates & virtual dimensions whenever resolution or zones update
@@ -427,9 +431,14 @@ const DdzTableStage: React.FC<DdzTableViewProps & { rotationDeg: VirtualRotation
         const liveUiScale = perfMonitor.cachedLiveUiScale;
         perfMonitor.smoothedUiScale += (liveUiScale - perfMonitor.smoothedUiScale) * 0.35;
         const m = metricsRef.current;
-        const fitScale = computeFitScale(m.width, m.height);
+        const mAspect = m.height > 0 ? m.width / m.height : DESIGN_WIDTH / DESIGN_HEIGHT;
+        const mVirtualWidth = Math.max(
+          DESIGN_WIDTH,
+          Math.min(1660, Math.round(DESIGN_HEIGHT * mAspect))
+        );
+        const fitScale = computeFitScale(m.width, m.height, mVirtualWidth);
         const uiModulation = 0.985 + ((perfMonitor.smoothedUiScale - 0.78) / 0.22) * 0.015;
-        const targetStageScale = fitScale * Math.max(0.97, Math.min(1.01, uiModulation));
+        const targetStageScale = fitScale * Math.max(0.97, Math.min(1.0, uiModulation));
 
         if (perfMonitor.smoothedStageScale === 0) {
           perfMonitor.smoothedStageScale = targetStageScale;

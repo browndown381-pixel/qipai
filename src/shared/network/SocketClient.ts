@@ -1,98 +1,108 @@
 import { io, Socket } from 'socket.io-client';
 
-type EventHandler<T = any> = (payload: T) => void;
-
-/**
- * Generic WebSocket Client wrapper (/src/shared/network/SocketClient.ts).
- * Strictly game-agnostic: contains no game-specific business logic.
- */
 export class SocketClient {
   private socket: Socket | null = null;
-  private listeners: Map<string, Set<EventHandler>> = new Map();
-  private playerId: string;
+  private listeners: Map<string, Set<(data: any) => void>> = new Map();
+  private playerId = '';
 
   constructor() {
-    const savedId = localStorage.getItem('h5_game_player_id');
-    if (savedId) {
-      this.playerId = savedId;
-    } else {
-      this.playerId = `guest_${Math.random().toString(36).slice(2, 10)}`;
-      localStorage.setItem('h5_game_player_id', this.playerId);
+    this.initPlayerIdentity();
+  }
+
+  private initPlayerIdentity(): void {
+    if (typeof window !== 'undefined') {
+      try {
+        let id = localStorage.getItem('h5_game_player_id');
+        if (!id) {
+          id = `player_${Math.random().toString(36).slice(2, 10)}`;
+          localStorage.setItem('h5_game_player_id', id);
+        }
+        this.playerId = id;
+      } catch {
+        this.playerId = `player_${Math.random().toString(36).slice(2, 10)}`;
+      }
     }
   }
 
   getPlayerId(): string {
+    if (!this.playerId) this.initPlayerIdentity();
     return this.playerId;
   }
 
   connect(): void {
-    if (this.socket) return;
+    if (this.socket?.connected || typeof window === 'undefined') return;
+    const nickname = localStorage.getItem('h5_game_nickname') || undefined;
+    const avatarId = localStorage.getItem('h5_game_avatar') || undefined;
 
-    const savedNickname = localStorage.getItem('h5_game_nickname') || undefined;
-    const savedAvatar = localStorage.getItem('h5_game_avatar') || undefined;
+    if (this.socket) {
+      this.socket.connect();
+      return;
+    }
 
     this.socket = io(window.location.origin, {
-      transports: ['polling', 'websocket'],
-      reconnection: true,
-      reconnectionAttempts: 30,
-      reconnectionDelay: 800,
+      transports: ['websocket', 'polling'],
       auth: {
-        playerId: this.playerId,
-        nickname: savedNickname,
-        avatarId: savedAvatar,
+        playerId: this.getPlayerId(),
+        nickname,
+        avatarId,
       },
     });
 
     this.socket.on('connect', () => {
-      const latestNick = localStorage.getItem('h5_game_nickname') || undefined;
-      const latestAvatar = localStorage.getItem('h5_game_avatar') || undefined;
       this.emit('c2s_auth_guest', {
-        playerId: this.playerId,
-        nickname: latestNick,
-        avatarId: latestAvatar,
+        playerId: this.getPlayerId(),
+        nickname: localStorage.getItem('h5_game_nickname') || undefined,
+        avatarId: localStorage.getItem('h5_game_avatar') || undefined,
       });
-      this.dispatchLocal('socket_connected', { connected: true });
+      this.dispatchLocal('socket_connected', {});
     });
 
-    this.socket.on('disconnect', () => {
-      this.dispatchLocal('socket_disconnected', { connected: false });
-    });
-
-    this.socket.onAny((event: string, payload: unknown) => {
+    this.socket.onAny((event: string, payload: any) => {
+      if (event === 's2c_auth_success' && payload && typeof payload === 'object') {
+        const prof = payload.profile;
+        if (prof?.playerId) {
+          this.playerId = prof.playerId;
+          try {
+            localStorage.setItem('h5_game_player_id', prof.playerId);
+          } catch {
+            // Ignore
+          }
+        }
+      }
       this.dispatchLocal(event, payload);
     });
   }
 
-  emit(event: string, payload?: unknown): void {
-    if (!this.socket) {
-      this.connect();
+  private dispatchLocal(event: string, payload: any): void {
+    const set = this.listeners.get(event);
+    if (set) {
+      set.forEach((cb) => {
+        try {
+          cb(payload);
+        } catch (err) {
+          console.error(`[SocketClient] Listener error on ${event}:`, err);
+        }
+      });
     }
-    this.socket?.emit(event, payload);
   }
 
-  on<T = any>(event: string, handler: EventHandler<T>): () => void {
+  on<T = any>(event: string, callback: (data: T) => void): () => void {
     let set = this.listeners.get(event);
     if (!set) {
       set = new Set();
       this.listeners.set(event, set);
     }
-    set.add(handler);
-    return () => this.off(event, handler);
+    set.add(callback as (data: any) => void);
+    return () => {
+      set?.delete(callback as (data: any) => void);
+    };
   }
 
-  off<T = any>(event: string, handler: EventHandler<T>): void {
-    const set = this.listeners.get(event);
-    if (set) {
-      set.delete(handler);
+  emit<T = any>(event: string, payload?: T): void {
+    if (!this.socket) {
+      this.connect();
     }
-  }
-
-  private dispatchLocal(event: string, payload: unknown): void {
-    const set = this.listeners.get(event);
-    if (!set) return;
-    for (const fn of set) {
-      fn(payload);
-    }
+    this.socket?.emit(event, payload);
   }
 }
 

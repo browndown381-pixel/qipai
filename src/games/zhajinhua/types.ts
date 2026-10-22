@@ -21,7 +21,7 @@ export enum ZjhCategory {
   TRIPLE = 6,
 }
 
-export type ZjhMode = 'classic' | 'special';
+export type ZjhMode = 'classic' | 'special' | 'bloody' | 'quick';
 
 export interface ZjhHandValue {
   category: ZjhCategory;
@@ -30,6 +30,50 @@ export interface ZjhHandValue {
   label: string;
   /** Hand is an off-suit 2-3-5 (only meaningful in 'special' mode). */
   is235: boolean;
+}
+
+export interface ZjhEquityAnalysis {
+  category: ZjhCategory;
+  label: string;
+  score: number;
+  is235: boolean;
+  /** Exact 1v1 win probability (0..100) after removing own 3 dead cards from 52-card deck (18,424 opponent combos). */
+  headsUpEquity: number;
+  /** Estimated multi-way win probability (0..100) against (activeCount - 1) opponents. */
+  multiWayEquity: number;
+  /** Required equity to break even on a call: callCost / (pot + callCost) in percentage (0..100). */
+  potOdds: number;
+  /** Expected value of calling in beans relative to pot. */
+  callEv: number;
+  /** Recommended optimal action ('fold' | 'call' | 'raise' | 'compare' | 'allin'). */
+  recommendedAction: ZjhActionType;
+  reasoning: string;
+}
+
+export interface ZjhDynamicPotOddsSnapshot {
+  round: number;
+  pot: number;
+  callCost: number;
+  compareCost: number;
+  activeCount: number;
+  seenOpponentCount: number;
+  blindOpponentCount: number;
+  handLabel: string;
+  headsUpEquity: number;
+  /** Multi-player dynamic win rate (0..100) adjusted per-opponent by seen/blind status, raises, and round depth. */
+  dynamicWinRate: number;
+  /** Win rate shift (Δ%) compared to the previous betting round or action. */
+  winRateDelta: number;
+  /** Direct pot odds threshold: callCost / (pot + callCost) in percentage (0..100). */
+  potOddsPct: number;
+  /** Implied pot odds considering remaining active opponents likely to call in the current round. */
+  impliedOddsPct: number;
+  /** Edge = dynamicWinRate - potOddsPct. */
+  equityEdgePct: number;
+  callEv: number;
+  raiseEv: number;
+  recommendedAction: ZjhActionType;
+  opponentRangeSummary: string;
 }
 
 export type ZjhPhase = 'WAITING' | 'BETTING' | 'SHOWDOWN' | 'RESULT';

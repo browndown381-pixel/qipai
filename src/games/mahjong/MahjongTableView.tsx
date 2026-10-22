@@ -29,7 +29,8 @@ import {
   MahjongTableSnapshot,
   RoundBillRecord,
 } from './types';
-import { getSuit } from './algorithms/MahjongTile';
+import { getSuit, setCurrentMahjongMode } from './algorithms/MahjongTile';
+import { MahjongDebugLogger } from './utils/MahjongDebugLogger';
 import { AutoLandscapeContainer } from './components/AutoLandscapeContainer';
 import { MahjongPlayerAvatar } from './components/MahjongPlayerAvatar';
 import { CompassCenter } from './components/CompassCenter';
@@ -105,6 +106,7 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
     socketClient.emit('c2s_request_snapshot');
 
     return () => {
+      soundEngine.clearMahjongVoiceQueue();
       unsubscribeSnapshot();
       unsubscribeReconnect();
     };
@@ -121,29 +123,65 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
   // Audio, Discard Voices, Melds, and Bill Notifications
   useEffect(() => {
     if (!snapshot) return;
+    setCurrentMahjongMode(snapshot.mode || 'puer');
 
     // 1. Phase sound cues & dice rolling ritual
     if (prevPhaseRef.current !== snapshot.phase) {
       if (snapshot.phase === 'DEALING') {
+        soundEngine.clearMahjongVoiceQueue();
         soundEngine.playMahjongDeal();
         if (snapshot.diceValues) {
           setShowDiceAnimation(true);
         }
+        MahjongDebugLogger.logDealSnapshot({
+          roomId: snapshot.roomId,
+          mode: snapshot.mode || 'puer',
+          dealerSeat: snapshot.dealerSeatId,
+          wallRemaining: snapshot.remainWallCount,
+          seats: snapshot.players.map((p) => ({
+            seat: p.seatId,
+            name: p.nickname,
+            isBot: p.isBot,
+            hand: p.handTiles || [],
+            melds: p.melds || [],
+            discards: p.discards || [],
+          })),
+          source: 'CLIENT',
+        });
       } else if (snapshot.phase === 'DING_QUE') {
         soundEngine.playTap(760);
       }
       prevPhaseRef.current = snapshot.phase;
     }
 
-    // 2. Draw sound cues for self
+    // 2. Draw sound cues & Turn Analysis log for self
     const myPlayer = snapshot.players[mySeatId];
     if (myPlayer?.drawnTile && myPlayer.drawnTile !== prevDrawnRef.current) {
-      if (myPlayer.drawnTile === 31) {
+      if (myPlayer.drawnTile === 31 && (snapshot.mode === 'hongzhong' || snapshot.mode === 'hongzhong_xueliu')) {
         soundEngine.playMahjongWild();
       } else {
         soundEngine.playMahjongDraw();
       }
       prevDrawnRef.current = myPlayer.drawnTile;
+
+      const lackMap: Record<number, 'wan' | 'tiao' | 'tong'> = { 0: 'wan', 1: 'tiao', 2: 'tong' };
+      const dq = myPlayer.dingQueSuit;
+      MahjongDebugLogger.logTurnAnalysis({
+        seat: mySeatId,
+        playerName: myPlayer.nickname,
+        mode: snapshot.mode || 'puer',
+        drawnTile: myPlayer.drawnTile,
+        hand: myPlayer.handTiles || [],
+        melds: myPlayer.melds || [],
+        visibleTiles: [
+          ...snapshot.players.flatMap((p) => p.discards || []),
+          ...snapshot.players.flatMap((p) => (p.melds || []).flatMap((m) => m.tiles || [])),
+        ],
+        lackSuit: dq !== null && dq !== undefined ? lackMap[dq] || null : null,
+        wallRemaining: snapshot.remainWallCount,
+        isBot: false,
+        source: 'CLIENT',
+      });
     }
 
     // 3. Discard Voice Callout (Reference authentic female/male library)
@@ -175,6 +213,17 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
         const isFemale = player?.avatarId === 'beier' || player?.avatarId === 'heroine';
         const gender = isFemale ? 'female' : 'male';
         soundEngine.playTileVoice(tileId, gender);
+
+        MahjongDebugLogger.logDiscardAction({
+          seat: latest.seatId,
+          playerName: player?.nickname || `座位${latest.seatId}`,
+          tileId,
+          gender,
+          mode: snapshot.mode || 'puer',
+          handAfter: latest.seatId === mySeatId ? myPlayer?.handTiles : undefined,
+          melds: player?.melds || [],
+          source: 'CLIENT',
+        });
       }
     }
 
@@ -188,6 +237,15 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
           const gender = isFemale ? 'female' : 'male';
           soundEngine.playActionVoice('peng', gender);
           setActiveActionGlow('peng');
+          MahjongDebugLogger.logActionAndSettlement({
+            action: 'peng',
+            seat: sId,
+            playerName: p.nickname,
+            gender,
+            targetTile: latestMeld.card || latestMeld.tiles?.[0],
+            mode: snapshot.mode || 'puer',
+            source: 'CLIENT',
+          });
         }
       }
       prevMeldsCountsRef.current[sId] = meldsCount;
@@ -208,12 +266,43 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
       if (latestBill.eventType === 'zimo') {
         soundEngine.playActionVoice('zimo', gender);
         setActiveActionGlow('zimo');
+        MahjongDebugLogger.logActionAndSettlement({
+          action: 'zimo',
+          seat: latestBill.winnerSeatId ?? 0,
+          playerName: winnerPlayer?.nickname || '玩家',
+          gender,
+          mode: snapshot.mode || 'puer',
+          hand: winnerPlayer?.handTiles,
+          melds: winnerPlayer?.melds,
+          scoreDelta: latestBill.scoreDelta,
+          source: 'CLIENT',
+        });
       } else if (latestBill.eventType === 'dianpao' || latestBill.eventType === 'qianggang') {
         soundEngine.playActionVoice('hu', gender);
         setActiveActionGlow('hu');
+        MahjongDebugLogger.logActionAndSettlement({
+          action: 'hu',
+          seat: latestBill.winnerSeatId ?? 0,
+          playerName: winnerPlayer?.nickname || '玩家',
+          gender,
+          mode: snapshot.mode || 'puer',
+          hand: winnerPlayer?.handTiles,
+          melds: winnerPlayer?.melds,
+          scoreDelta: latestBill.scoreDelta,
+          source: 'CLIENT',
+        });
       } else if (latestBill.eventType === 'guafeng' || latestBill.eventType === 'xiayu') {
         soundEngine.playActionVoice('gang', gender);
         setActiveActionGlow('gang');
+        MahjongDebugLogger.logActionAndSettlement({
+          action: 'gang',
+          seat: latestBill.winnerSeatId ?? 0,
+          playerName: winnerPlayer?.nickname || '玩家',
+          gender,
+          mode: snapshot.mode || 'puer',
+          scoreDelta: latestBill.scoreDelta,
+          source: 'CLIENT',
+        });
       }
 
       if (latestBill.winnerSeatId !== undefined && latestBill.winnerSeatId === mySeatId) {

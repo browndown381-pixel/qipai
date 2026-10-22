@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="emeraldBg512" cx="50%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#0F573E" />
+      <stop offset="65%" stop-color="#072B1E" />
+      <stop offset="100%" stop-color="#041810" />
+    </radialGradient>
+    <linearGradient id="goldGrad512" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FEF08A" />
+      <stop offset="50%" stop-color="#F59E0B" />
+      <stop offset="100%" stop-color="#B45309" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#emeraldBg512)" />
+  <rect x="26" y="26" width="460" height="460" rx="92" fill="none" stroke="url(#goldGrad512)" stroke-width="10" opacity="0.88" />
+  <circle cx="256" cy="256" r="176" fill="none" stroke="url(#goldGrad512)" stroke-width="3" opacity="0.28" />
+  <!-- Left Card -->
+  <g transform="translate(194, 268) rotate(-15)">
+    <rect x="-86" y="-122" width="172" height="244" rx="22" fill="#FFFDF9" stroke="#D97706" stroke-width="6" />
+    <text x="-60" y="-64" font-family="Outfit, sans-serif" font-weight="800" font-size="48" fill="#DC2626">A</text>
+    <path d="M0 -22 C-28 -54 -60 -16 0 38 C60 -16 28 -54 0 -22 Z" fill="#DC2626" />
+  </g>
+  <!-- Right Card (Laizi Gold Star Card) -->
+  <g transform="translate(308, 262) rotate(12)">
+    <rect x="-90" y="-128" width="180" height="256" rx="24" fill="#FFFBEB" stroke="url(#goldGrad512)" stroke-width="8" />
+    <text x="-64" y="-64" font-family="Outfit, sans-serif" font-weight="800" font-size="46" fill="#B45309">★</text>
+    <polygon points="0,-46 14,-12 50,-12 22,10 32,46 0,24 -32,46 -22,10 -50,-12 -14,-12" fill="url(#goldGrad512)" />
+    <text x="0" y="92" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, sans-serif" font-weight="900" font-size="34" fill="#92400E">欢乐斗地主</text>
+  </g>
+</svg>

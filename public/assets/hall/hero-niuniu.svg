@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 260" width="100%" height="100%">
+  <defs>
+    <radialGradient id="fireGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff9900" stop-opacity="0.8"/>
+      <stop offset="50%" stop-color="#ff3300" stop-opacity="0.4"/>
+      <stop offset="100%" stop-color="#990000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffe680"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+    <linearGradient id="hornGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ffd700"/>
+      <stop offset="70%" stop-color="#ff6b00"/>
+      <stop offset="100%" stop-color="#ff2200"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#eaeaea"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#000000" flood-opacity="0.6"/>
+    </filter>
+    <filter id="goldGlow">
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#fbbf24" flood-opacity="0.8"/>
+    </filter>
+  </defs>
+
+  <!-- Ambient Flame / Energy Burst -->
+  <circle cx="200" cy="130" r="120" fill="url(#fireGlow)"/>
+
+  <!-- Background Fan of 5 Poker Cards (Niu Niu) -->
+  <g filter="url(#shadow)">
+    <!-- Card 1: 10 of Spades -->
+    <g transform="translate(110, 80) rotate(-22)">
+      <rect width="64" height="96" rx="8" fill="url(#cardGrad)" stroke="#d97706" stroke-width="2"/>
+      <text x="8" y="22" font-family="Arial, sans-serif" font-weight="900" font-size="16" fill="#1e1e1e">10</text>
+      <text x="8" y="38" font-family="Arial, sans-serif" font-size="14" fill="#1e1e1e">♠</text>
+      <text x="32" y="62" font-family="Arial, sans-serif" font-size="28" fill="#1e1e1e" text-anchor="middle">♠</text>
+    </g>
+    <!-- Card 2: J of Hearts -->
+    <g transform="translate(145, 68) rotate(-11)">
+      <rect width="64" height="96" rx="8" fill="url(#cardGrad)" stroke="#d97706" stroke-width="2"/>
+      <text x="8" y="22" font-family="Arial, sans-serif" font-weight="900" font-size="18" fill="#dc2626">J</text>
+      <text x="8" y="38" font-family="Arial, sans-serif" font-size="14" fill="#dc2626">♥</text>
+      <text x="32" y="62" font-family="Arial, sans-serif" font-size="28" fill="#dc2626" text-anchor="middle">♥</text>
+    </g>
+    <!-- Card 3: Q of Clubs -->
+    <g transform="translate(180, 62) rotate(0)">
+      <rect width="64" height="96" rx="8" fill="url(#cardGrad)" stroke="#d97706" stroke-width="2"/>
+      <text x="8" y="22" font-family="Arial, sans-serif" font-weight="900" font-size="18" fill="#1e1e1e">Q</text>
+      <text x="8" y="38" font-family="Arial, sans-serif" font-size="14" fill="#1e1e1e">♣</text>
+      <text x="32" y="62" font-family="Arial, sans-serif" font-size="28" fill="#1e1e1e" text-anchor="middle">♣</text>
+    </g>
+    <!-- Card 4: K of Diamonds -->
+    <g transform="translate(215, 68) rotate(11)">
+      <rect width="64" height="96" rx="8" fill="url(#cardGrad)" stroke="#d97706" stroke-width="2"/>
+      <text x="8" y="22" font-family="Arial, sans-serif" font-weight="900" font-size="18" fill="#dc2626">K</text>
+      <text x="8" y="38" font-family="Arial, sans-serif" font-size="14" fill="#dc2626">♦</text>
+      <text x="32" y="62" font-family="Arial, sans-serif" font-size="28" fill="#dc2626" text-anchor="middle">♦</text>
+    </g>
+    <!-- Card 5: K of Spades (Double King Niu-Niu) -->
+    <g transform="translate(250, 80) rotate(22)">
+      <rect width="64" height="96" rx="8" fill="url(#cardGrad)" stroke="#f59e0b" stroke-width="2.5"/>
+      <text x="8" y="22" font-family="Arial, sans-serif" font-weight="900" font-size="18" fill="#1e1e1e">K</text>
+      <text x="8" y="38" font-family="Arial, sans-serif" font-size="14" fill="#1e1e1e">♠</text>
+      <text x="32" y="62" font-family="Arial, sans-serif" font-size="28" fill="#1e1e1e" text-anchor="middle">♠</text>
+    </g>
+  </g>
+
+  <!-- Mighty Golden Bull Totem / Face Overlay -->
+  <g filter="url(#shadow)">
+    <!-- Bull Left Horn -->
+    <path d="M140 120 C110 80 85 50 70 30 C95 48 125 72 145 95 Z" fill="url(#hornGrad)" filter="url(#goldGlow)"/>
+    <!-- Bull Right Horn -->
+    <path d="M260 120 C290 80 315 50 330 30 C305 48 275 72 255 95 Z" fill="url(#hornGrad)" filter="url(#goldGlow)"/>
+
+    <!-- Bull Head Plate -->
+    <polygon points="150,90 250,90 275,140 240,210 160,210 125,140" fill="#881313" stroke="url(#goldGrad)" stroke-width="4"/>
+    
+    <!-- Bull Forehead Plate Armor -->
+    <polygon points="170,95 230,95 245,135 200,165 155,135" fill="url(#goldGrad)"/>
+    
+    <!-- Bull Eyes Glowing Red/Yellow -->
+    <polygon points="160,135 185,135 178,145" fill="#fef08a" filter="url(#goldGlow)"/>
+    <polygon points="240,135 215,135 222,145" fill="#fef08a" filter="url(#goldGlow)"/>
+
+    <!-- Golden Nose Ring -->
+    <circle cx="200" cy="195" r="16" fill="none" stroke="url(#goldGrad)" stroke-width="5" filter="url(#goldGlow)"/>
+    
+    <!-- Snout Muzzle -->
+    <ellipse cx="200" cy="180" rx="35" ry="20" fill="#b91c1c"/>
+    <ellipse cx="188" cy="182" rx="4" ry="6" fill="#450a0a"/>
+    <ellipse cx="212" cy="182" rx="4" ry="6" fill="#450a0a"/>
+  </g>
+
+  <!-- Stacks of Casino Chips at Bottom Forefront -->
+  <g filter="url(#shadow)">
+    <!-- Left Chips -->
+    <ellipse cx="105" cy="215" rx="22" ry="10" fill="#b45309" stroke="#fde68a" stroke-width="2"/>
+    <ellipse cx="105" cy="207" rx="22" ry="10" fill="#d97706" stroke="#fde68a" stroke-width="2"/>
+    <ellipse cx="105" cy="199" rx="22" ry="10" fill="url(#goldGrad)" stroke="#fde68a" stroke-width="2"/>
+
+    <!-- Right Chips -->
+    <ellipse cx="295" cy="215" rx="22" ry="10" fill="#991b1b" stroke="#fca5a5" stroke-width="2"/>
+    <ellipse cx="295" cy="207" rx="22" ry="10" fill="#dc2626" stroke="#fca5a5" stroke-width="2"/>
+    <ellipse cx="295" cy="199" rx="22" ry="10" fill="#ef4444" stroke="#fef08a" stroke-width="2"/>
+  </g>
+
+  <!-- Golden Flare / Sparkles -->
+  <polygon points="200,60 204,70 215,72 205,78 207,88 200,81 193,88 195,78 185,72 196,70" fill="#ffffff" filter="url(#goldGlow)"/>
+  <polygon points="325,45 328,52 336,54 329,58 331,66 325,61 319,66 321,58 314,54 322,52" fill="#fef08a" filter="url(#goldGlow)"/>
+</svg>

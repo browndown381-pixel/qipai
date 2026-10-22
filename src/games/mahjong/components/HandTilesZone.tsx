@@ -129,34 +129,15 @@ export const HandTilesZone: React.FC<HandTilesZoneProps> = ({
       <div className="absolute bottom-[10px] left-1/2 -translate-x-1/2 pointer-events-auto flex flex-col items-center z-20">
         {/* Floating Quick Discard Button above Selected Tile */}
         {isMyTurn && selectedTileIdx !== null && handTiles[selectedTileIdx] !== undefined && (
-          <div className="flex flex-col items-center mb-1.5 animate-bounce">
+          <div className="flex flex-col items-center mb-1.5">
             <button
               type="button"
               onClick={() => executeDiscard(handTiles[selectedTileIdx])}
-              className="flex items-center gap-1.5 rounded-full border-2 border-amber-300 bg-gradient-to-r from-amber-400 via-amber-500 to-orange-500 px-4 py-1 font-display text-xs font-black text-[#18181B] shadow-[0_4px_16px_rgba(251,191,36,0.85)] active:scale-95"
+              className="flex items-center gap-1.5 rounded-full border-2 border-amber-300 bg-gradient-to-r from-amber-400 via-amber-500 to-orange-500 px-4 py-1 font-display text-xs font-black text-[#18181B] shadow-[0_4px_16px_rgba(251,191,36,0.85)] active:scale-95 cursor-pointer"
             >
               <ArrowUp className="h-3.5 w-3.5" />
               <span>出牌: {getTileName(handTiles[selectedTileIdx])}</span>
             </button>
-            {(() => {
-              const selectedTile = handTiles[selectedTileIdx];
-              const tingHint = discardHints.find((h) => h.card === selectedTile);
-              if (tingHint) {
-                return (
-                  <span className="mt-1 rounded-full bg-[#1b120c]/90 px-2.5 py-0.5 text-[10px] font-black text-amber-300 border border-amber-400/50 shadow-md">
-                    听牌契机 · 打出即听 {tingHint.waits.length} 门
-                  </span>
-                );
-              }
-              if (selectedTile === optimalDiscardTile && optimalDiscardReason) {
-                return (
-                  <span className="mt-1 rounded-full bg-black/75 px-2.5 py-0.5 text-[10px] font-bold text-amber-300 border border-amber-400/40 shadow-sm">
-                    AI推荐 · {optimalDiscardReason}
-                  </span>
-                );
-              }
-              return null;
-            })()}
           </div>
         )}
 
@@ -171,17 +152,11 @@ export const HandTilesZone: React.FC<HandTilesZoneProps> = ({
             const isSelected = selectedTileIdx === idx;
             const isIllegal = isMyTurn && !legalDiscards.includes(t);
             const isNew = drawnTile !== null && t === drawnTile && idx === handTiles.length - 1;
-            const isRecommended = isMyTurn && optimalDiscardTile === t && !isIllegal;
             const tingHint = discardHints.find((h) => h.card === t);
 
             return (
               <div key={`${t}_${idx}`} className="relative">
-                {isRecommended && !isSelected && (
-                  <span className="absolute -top-3.5 left-1/2 -translate-x-1/2 z-30 rounded-full border border-amber-300 bg-gradient-to-r from-amber-400 to-orange-500 px-1 py-0.1 font-display text-[8px] font-black text-black shadow-md animate-pulse pointer-events-none">
-                    推荐
-                  </span>
-                )}
-                {tingHint && !isSelected && !isRecommended && (
+                {tingHint && !isSelected && (
                   <span className="absolute -top-2.5 right-0 z-30 flex items-center justify-center rounded-sm border border-amber-300 bg-gradient-to-b from-amber-400 to-amber-600 px-1 py-0 text-[8px] font-black text-[#18181B] shadow-md pointer-events-none">
                     听
                   </span>

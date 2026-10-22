@@ -430,37 +430,23 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
                 </button>
               </div>
 
-              {/* Top-Center: Room Meta Badge */}
-              <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full border border-amber-400/40 bg-black/60 px-3.5 py-1 backdrop-blur-md shadow-xl text-xs font-bold text-amber-200">
-                <span className="rounded-sm bg-red-700 px-1 py-0.2 text-[10px] font-black text-amber-100">麻将</span>
+              {/* Top-Center: Clean Mode & Base Score Capsule */}
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-full border border-amber-400/35 bg-black/60 px-4 py-1.5 backdrop-blur-md shadow-xl text-xs font-bold text-amber-200">
                 <span>{getModeLabel(snapshot?.mode)}</span>
-                <span className="text-white/30">|</span>
-                <span className="font-mono text-white/90">房号: {snapshot?.roomId || '------'}</span>
-                <span className="text-white/30">|</span>
-                <span className="font-mono text-amber-300">底分: {snapshot?.baseScore ?? 100}</span>
+                <span className="text-white/30">·</span>
+                <span className="font-mono text-amber-300">底分 {snapshot?.baseScore ?? 100}</span>
               </div>
 
               {/* Top-Right: Sound & Fullscreen Controls */}
-              <div className="absolute top-3 right-4 z-30 flex items-center gap-1.5 pointer-events-auto">
-                {import.meta.env.DEV && (
-                  <button
-                    type="button"
-                    onClick={() => socketClient.emit('c2s_mj_test_settle')}
-                    title="立即结算对局 (测试预览官方结算大窗)"
-                    className="flex h-8 items-center px-2.5 rounded-xl border border-amber-400/60 bg-amber-500/25 text-amber-200 hover:bg-amber-500/45 text-[11px] font-bold shadow-md backdrop-blur-xs transition-all active:scale-95"
-                  >
-                    结算预览
-                  </button>
-                )}
-
+              <div className="absolute top-3 right-4 z-30 flex items-center gap-2 pointer-events-auto">
                 <button
                   type="button"
                   onClick={toggleSound}
                   title={soundEnabled ? '静音' : '开启声音'}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/15 bg-black/50 text-white/85 hover:bg-black/70 shadow-md backdrop-blur-xs"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white/85 hover:bg-black/75 shadow-md backdrop-blur-xs cursor-pointer"
                 >
                   {soundEnabled ? (
-                    <Volume2 className="h-4 w-4 text-emerald-400" />
+                    <Volume2 className="h-4 w-4 text-amber-300" />
                   ) : (
                     <VolumeX className="h-4 w-4 text-rose-400" />
                   )}
@@ -478,31 +464,15 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
                       }
                     }}
                     title={isFullscreen ? '退出全屏' : '全屏'}
-                    className={`flex h-8 items-center gap-1 px-2 rounded-xl border shadow-md backdrop-blur-xs transition-all ${
-                      isFullscreen
-                        ? 'border-white/15 bg-black/50 text-white/85 hover:bg-black/70'
-                        : 'border-amber-400/40 bg-black/60 text-amber-300 hover:bg-black/80 hover:scale-105 active:scale-95'
-                    }`}
+                    className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/55 text-white/85 hover:bg-black/75 shadow-md backdrop-blur-xs transition-all cursor-pointer"
                   >
                     {isFullscreen ? (
-                      <Minimize2 className="h-4 w-4" />
+                      <Minimize2 className="h-4 w-4 text-amber-300" />
                     ) : (
-                      <>
-                        <Maximize2 className="h-4 w-4 text-amber-400" />
-                        <span className="text-[11px] font-bold">全屏</span>
-                      </>
+                      <Maximize2 className="h-4 w-4 text-white" />
                     )}
                   </button>
                 )}
-
-                <button
-                  type="button"
-                  onClick={() => setShowFullscreenGuide(true)}
-                  title="全屏与隐藏导航栏指引"
-                  className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/15 bg-black/50 text-white/70 hover:text-amber-300 hover:bg-black/70 shadow-md backdrop-blur-xs"
-                >
-                  <HelpCircle className="h-4 w-4" />
-                </button>
               </div>
 
               {/* ===================================================================

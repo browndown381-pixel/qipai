@@ -6,6 +6,7 @@ import {
   NiuniuHandResult,
   NiuniuPhase,
   NiuniuPlayerInfo,
+  NiuniuPlayMode,
   NiuniuSettlement,
   NiuniuTableSnapshot,
 } from '../../../src/games/niuniu/types.js';
@@ -35,7 +36,7 @@ export class NiuniuRoom implements IGameRoom {
   maxPlayers = 5;
   createdAt: number = Date.now();
 
-  private playMode: 'qiangzhuang' | 'tongbi' | 'crazy';
+  private playMode: NiuniuPlayMode;
   private seats: Array<RoomPlayerInfo | null> = [null, null, null, null, null];
   private phase: NiuniuPhase = 'WAITING';
   private connectionManager: ConnectionManager;
@@ -47,14 +48,20 @@ export class NiuniuRoom implements IGameRoom {
   private betMultipliers: number[] = [0, 0, 0, 0, 0];
   private dealerSeatId: number = 0;
   private hasShownHand: boolean[] = [false, false, false, false, false];
-  private handResults: (NiuniuHandResult | undefined)[] = [undefined, undefined, undefined, undefined, undefined];
+  private handResults: (NiuniuHandResult | undefined)[] = [
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ];
   private scoreDeltas: number[] = [0, 0, 0, 0, 0];
   private candidateDealerSeats: number[] = [];
   private currentSettlement?: NiuniuSettlement;
 
   // Timers
   private phaseTimer: NodeJS.Timeout | null = null;
-  private botActionTimer: NodeJS.Timeout | null = null;
+  private botActionTimers: NodeJS.Timeout[] = [];
   private countdown: number = 0;
   private countdownInterval: NodeJS.Timeout | null = null;
 
@@ -110,7 +117,8 @@ export class NiuniuRoom implements IGameRoom {
       avatarId: player.avatarId,
       seatIndex: emptyIndex,
       beans: player.beans,
-      ready: player.isBot ? true : false,
+      // Auto-ready upon initial join so quick match starts seamlessly
+      ready: true,
       isBot: Boolean(player.isBot),
       disconnected: false,
       trusteeship: false,
@@ -126,7 +134,6 @@ export class NiuniuRoom implements IGameRoom {
     if (seatIndex === -1) return false;
 
     if (this.phase !== 'WAITING' && this.phase !== 'ROUND_RESULT') {
-      // Mark as disconnected during active round
       this.seats[seatIndex]!.disconnected = true;
       this.broadcastSnapshot();
       return true;
@@ -176,7 +183,7 @@ export class NiuniuRoom implements IGameRoom {
       playerId: botId,
       nickname: profile.nickname,
       avatarId: profile.avatarId,
-      beans: Math.floor(this.baseScore * (40 + Math.random() * 80)),
+      beans: Math.floor(this.baseScore * (60 + Math.random() * 90)),
       isBot: true,
     });
   }
@@ -248,10 +255,10 @@ export class NiuniuRoom implements IGameRoom {
       clearTimeout(this.phaseTimer);
       this.phaseTimer = null;
     }
-    if (this.botActionTimer) {
-      clearTimeout(this.botActionTimer);
-      this.botActionTimer = null;
+    for (const t of this.botActionTimers) {
+      clearTimeout(t);
     }
+    this.botActionTimers = [];
     if (this.countdownInterval) {
       clearInterval(this.countdownInterval);
       this.countdownInterval = null;
@@ -277,8 +284,8 @@ export class NiuniuRoom implements IGameRoom {
 
   private checkAutoStart(): void {
     if (this.phase !== 'WAITING' && this.phase !== 'ROUND_RESULT') return;
+    if (this.isEmptyOfHumans()) return;
 
-    // Fill bots if less than 5 players
     while (this.getPlayerCount() < this.maxPlayers) {
       this.addBotPlayer();
     }
@@ -300,7 +307,12 @@ export class NiuniuRoom implements IGameRoom {
     this.candidateDealerSeats = [];
     this.currentSettlement = undefined;
 
-    // Deal 5 cards to each seated player from standard 52 card deck
+    // Reset ready flags for the active round
+    this.seats.forEach((s) => {
+      if (s) s.ready = s.isBot;
+    });
+
+    // Deal 5 cards to each seated player from standard 52-card deck
     const deck = shuffleDeck(createStandardNiuniuDeck());
     this.hands = [[], [], [], [], []];
     for (let c = 0; c < 5; c++) {
@@ -313,31 +325,47 @@ export class NiuniuRoom implements IGameRoom {
 
     this.broadcastSnapshot();
 
-    // After dealing animation (1.2s), enter CALL_BANKER
+    // In Tongbi mode (通比牛牛), everyone bets 5x automatically and skips banker call
+    if (this.playMode === 'tongbi') {
+      this.dealerSeatId = -1;
+      this.callMultipliers = [0, 0, 0, 0, 0];
+      this.betMultipliers = [5, 5, 5, 5, 5];
+      this.phaseTimer = setTimeout(() => {
+        this.enterDeal5thPhase();
+      }, 900);
+      return;
+    }
+
+    // After dealing first 4 cards animation (0.9s), enter CALL_BANKER
     this.phaseTimer = setTimeout(() => {
       this.enterCallBankerPhase();
-    }, 1200);
+    }, 900);
   }
 
   private enterCallBankerPhase(): void {
+    this.clearTimers();
     this.phase = 'CALL_BANKER';
+    this.countdown = 6;
     this.broadcastSnapshot();
 
-    // Trigger AI bots to call banker
+    // Trigger AI bots to call banker using exact 48-card EV solver
     this.seats.forEach((seat, idx) => {
       if (seat && seat.isBot && this.callMultipliers[idx] === -1) {
-        const delay = 800 + Math.random() * 1200;
-        setTimeout(() => {
+        const delay = 600 + Math.random() * 1100;
+        const timer = setTimeout(() => {
           if (this.phase === 'CALL_BANKER' && this.callMultipliers[idx] === -1) {
-            const call = NiuniuBotEngine.decideCallBanker(this.hands[idx].slice(0, 4));
+            const call = NiuniuBotEngine.decideCallBanker(
+              this.hands[idx].slice(0, 4),
+              this.playMode
+            );
             this.handleCallBanker(idx, call);
           }
         }, delay);
+        this.botActionTimers.push(timer);
       }
     });
 
     this.startCountdown(6, () => {
-      // Auto default un-called players to 0 (不抢)
       this.seats.forEach((seat, idx) => {
         if (seat && this.callMultipliers[idx] === -1) {
           this.callMultipliers[idx] = 0;
@@ -352,20 +380,19 @@ export class NiuniuRoom implements IGameRoom {
     this.callMultipliers[seatIndex] = Math.max(0, Math.min(4, multiplier));
     this.broadcastSnapshot();
 
-    // If all seated players called, proceed immediately
     const allCalled = this.seats.every(
       (s, idx) => !s || this.callMultipliers[idx] !== -1
     );
     if (allCalled) {
-      if (this.countdownInterval) clearInterval(this.countdownInterval);
+      this.clearTimers();
       this.determineBanker();
     }
   }
 
   private determineBanker(): void {
+    this.clearTimers();
     this.phase = 'DETERMINE_BANKER';
 
-    // Find highest multiplier
     let maxCall = 0;
     this.seats.forEach((s, idx) => {
       if (s && this.callMultipliers[idx] > maxCall) {
@@ -380,91 +407,125 @@ export class NiuniuRoom implements IGameRoom {
       }
     });
 
+    // If nobody called (>0), all seated players become candidates at 1x
+    if (maxCall === 0) {
+      this.seats.forEach((s, idx) => {
+        if (s) {
+          this.callMultipliers[idx] = 1;
+        }
+      });
+    }
+
     this.candidateDealerSeats = candidateSeats.length > 0 ? candidateSeats : [0];
     const chosenDealer =
       this.candidateDealerSeats[
         Math.floor(Math.random() * this.candidateDealerSeats.length)
       ];
     this.dealerSeatId = chosenDealer;
+    if (this.callMultipliers[chosenDealer] <= 0) {
+      this.callMultipliers[chosenDealer] = 1;
+    }
 
     this.broadcastSnapshot();
 
-    // 1.5s dealer highlight flash animation, then go to BETTING
+    const delayMs = this.candidateDealerSeats.length > 1 ? 1300 : 650;
     this.phaseTimer = setTimeout(() => {
       this.enterBettingPhase();
-    }, 1500);
+    }, delayMs);
   }
 
   private enterBettingPhase(): void {
+    this.clearTimers();
     this.phase = 'BETTING';
-    // Dealer bet is locked to 1
+    this.countdown = 6;
     this.betMultipliers[this.dealerSeatId] = 1;
     this.broadcastSnapshot();
 
-    // Bots bet
+    const dealerCall = Math.max(1, this.callMultipliers[this.dealerSeatId] || 1);
+
     this.seats.forEach((seat, idx) => {
       if (seat && seat.isBot && idx !== this.dealerSeatId && this.betMultipliers[idx] === 0) {
-        const delay = 600 + Math.random() * 1200;
-        setTimeout(() => {
+        const delay = 500 + Math.random() * 1000;
+        const timer = setTimeout(() => {
           if (this.phase === 'BETTING' && this.betMultipliers[idx] === 0) {
-            const bet = NiuniuBotEngine.decideBetMultiplier(this.hands[idx].slice(0, 4));
+            const bet = NiuniuBotEngine.decideBetMultiplier(
+              this.hands[idx].slice(0, 4),
+              this.playMode,
+              dealerCall
+            );
             this.handleBet(idx, bet);
           }
         }, delay);
+        this.botActionTimers.push(timer);
       }
     });
 
     this.startCountdown(6, () => {
       this.seats.forEach((seat, idx) => {
         if (seat && idx !== this.dealerSeatId && this.betMultipliers[idx] === 0) {
-          this.betMultipliers[idx] = 5; // default 5x
+          this.betMultipliers[idx] = 5;
         }
       });
-      this.enterShowdownPhase();
+      this.enterDeal5thPhase();
     });
   }
 
   private handleBet(seatIndex: number, multiplier: number): void {
     if (this.phase !== 'BETTING' || seatIndex === this.dealerSeatId) return;
-    this.betMultipliers[seatIndex] = multiplier;
+    const validMultipliers = [5, 10, 15, 20];
+    this.betMultipliers[seatIndex] = validMultipliers.includes(multiplier)
+      ? multiplier
+      : 5;
     this.broadcastSnapshot();
 
     const allBet = this.seats.every(
       (s, idx) => !s || idx === this.dealerSeatId || this.betMultipliers[idx] > 0
     );
     if (allBet) {
-      if (this.countdownInterval) clearInterval(this.countdownInterval);
-      this.enterShowdownPhase();
+      this.clearTimers();
+      this.enterDeal5thPhase();
     }
   }
 
-  private enterShowdownPhase(): void {
-    this.phase = 'SHOWDOWN';
+  private enterDeal5thPhase(): void {
+    this.clearTimers();
+    this.phase = 'DEAL_5TH';
     this.broadcastSnapshot();
 
-    // Precalculate all hand evaluations
+    this.phaseTimer = setTimeout(() => {
+      this.enterShowdownPhase();
+    }, 650);
+  }
+
+  private enterShowdownPhase(): void {
+    this.clearTimers();
+    this.phase = 'SHOWDOWN';
+    this.countdown = 8;
+
     this.seats.forEach((seat, idx) => {
       if (seat && this.hands[idx].length === 5) {
-        this.handResults[idx] = evaluateNiuniuHand(this.hands[idx]);
+        this.handResults[idx] = evaluateNiuniuHand(this.hands[idx], this.playMode);
       }
     });
 
-    // Bots auto show hand with slight humanized delay
+    this.broadcastSnapshot();
+
     this.seats.forEach((seat, idx) => {
       if (seat && seat.isBot) {
-        const delay = 1000 + Math.random() * 2500;
-        setTimeout(() => {
+        const delay = 800 + Math.random() * 1600;
+        const timer = setTimeout(() => {
           if (this.phase === 'SHOWDOWN' && !this.hasShownHand[idx]) {
             this.handleShowHand(idx);
           }
         }, delay);
+        this.botActionTimers.push(timer);
       }
     });
 
     this.startCountdown(8, () => {
       this.seats.forEach((seat, idx) => {
         if (seat && !this.hasShownHand[idx]) {
-          this.handleShowHand(idx);
+          this.hasShownHand[idx] = true;
         }
       });
       this.compareAndSettle();
@@ -478,122 +539,246 @@ export class NiuniuRoom implements IGameRoom {
 
     const allShown = this.seats.every((s, idx) => !s || this.hasShownHand[idx]);
     if (allShown) {
-      if (this.countdownInterval) clearInterval(this.countdownInterval);
+      this.clearTimers();
       this.compareAndSettle();
     }
   }
 
   private compareAndSettle(): void {
+    this.clearTimers();
     this.phase = 'COMPARE_AND_SETTLE';
 
-    const dealerResult = this.handResults[this.dealerSeatId];
-    if (!dealerResult) return;
-
-    const dealerCall = Math.max(1, this.callMultipliers[this.dealerSeatId] || 1);
     const scoreDeltas = [0, 0, 0, 0, 0];
-    let dealerDeltaTotal = 0;
 
-    // Compare each non-dealer against dealer
-    this.seats.forEach((seat, idx) => {
-      if (!seat || idx === this.dealerSeatId) return;
-      const playerResult = this.handResults[idx];
-      if (!playerResult) return;
-
-      const playerBet = this.betMultipliers[idx] || 5;
-      const cmp = compareHands(playerResult, dealerResult);
-
-      if (cmp > 0) {
-        // Player wins
-        const winMult = playerResult.multiplier;
-        const amount = this.baseScore * dealerCall * playerBet * winMult;
-        const capped = Math.min(amount, seat.beans);
-        scoreDeltas[idx] = capped;
-        dealerDeltaTotal -= capped;
-      } else {
-        // Dealer wins
-        const winMult = dealerResult.multiplier;
-        const amount = this.baseScore * dealerCall * playerBet * winMult;
-        const capped = Math.min(amount, seat.beans);
-        scoreDeltas[idx] = -capped;
-        dealerDeltaTotal += capped;
+    if (this.playMode === 'tongbi') {
+      // 通比牛牛：全场最大牌型者赢其余所有人
+      let winnerIdx = 0;
+      for (let i = 1; i < 5; i++) {
+        if (!this.seats[i] || !this.handResults[i]) continue;
+        if (
+          !this.handResults[winnerIdx] ||
+          compareHands(this.handResults[i]!, this.handResults[winnerIdx]!) > 0
+        ) {
+          winnerIdx = i;
+        }
       }
-    });
+      const winResult = this.handResults[winnerIdx]!;
+      let totalWin = 0;
+      this.seats.forEach((seat, idx) => {
+        if (!seat || idx === winnerIdx) return;
+        const rawLoss = Math.round(this.baseScore * 5 * winResult.multiplier);
+        const cappedLoss = Math.min(rawLoss, seat.beans);
+        scoreDeltas[idx] = -cappedLoss;
+        totalWin += cappedLoss;
+      });
+      scoreDeltas[winnerIdx] = totalWin;
+      this.dealerSeatId = winnerIdx;
+    } else {
+      // 看牌抢庄 & 疯狂加倍：闲家分别与庄家比牌，带商业级以小博大/庄家赔付封顶保护
+      const dealerIdx = this.dealerSeatId >= 0 ? this.dealerSeatId : 0;
+      const dealerSeat = this.seats[dealerIdx];
+      const dealerResult = this.handResults[dealerIdx];
+      if (!dealerSeat || !dealerResult) return;
 
-    scoreDeltas[this.dealerSeatId] = dealerDeltaTotal;
+      const dealerCall = Math.max(1, this.callMultipliers[dealerIdx] || 1);
+      const rawDeltas = [0, 0, 0, 0, 0];
+
+      this.seats.forEach((seat, idx) => {
+        if (!seat || idx === dealerIdx) return;
+        const playerResult = this.handResults[idx];
+        if (!playerResult) return;
+
+        const playerBet = this.betMultipliers[idx] || 5;
+        const cmp = compareHands(playerResult, dealerResult);
+
+        if (cmp > 0) {
+          const rawWin = Math.round(
+            this.baseScore * dealerCall * playerBet * playerResult.multiplier
+          );
+          rawDeltas[idx] = Math.min(rawWin, seat.beans);
+        } else {
+          const rawLoss = Math.round(
+            this.baseScore * dealerCall * playerBet * dealerResult.multiplier
+          );
+          rawDeltas[idx] = -Math.min(rawLoss, seat.beans);
+        }
+      });
+
+      // 计算庄家净输赢并进行庄家余额封顶保护
+      const totalPlayersWin = rawDeltas.reduce(
+        (acc, d) => (d > 0 ? acc + d : acc),
+        0
+      );
+      const totalPlayersLoss = rawDeltas.reduce(
+        (acc, d) => (d < 0 ? acc + Math.abs(d) : acc),
+        0
+      );
+
+      const dealerAvailableForPayout = dealerSeat.beans + totalPlayersLoss;
+      const payoutScale =
+        totalPlayersWin > dealerAvailableForPayout && totalPlayersWin > 0
+          ? dealerAvailableForPayout / totalPlayersWin
+          : 1;
+
+      let dealerNet = 0;
+      this.seats.forEach((seat, idx) => {
+        if (!seat || idx === dealerIdx) return;
+        if (rawDeltas[idx] > 0) {
+          const finalWin = Math.round(rawDeltas[idx] * payoutScale);
+          scoreDeltas[idx] = finalWin;
+          dealerNet -= finalWin;
+        } else {
+          scoreDeltas[idx] = rawDeltas[idx];
+          dealerNet -= rawDeltas[idx];
+        }
+      });
+
+      scoreDeltas[dealerIdx] = dealerNet;
+    }
+
     this.scoreDeltas = scoreDeltas;
 
-    // Update player balances
+    // Update player balances & record match in storageService
     this.seats.forEach((seat, idx) => {
       if (seat) {
         seat.beans = Math.max(0, seat.beans + scoreDeltas[idx]);
-        if (!seat.isBot) {
-          storageService.updateBeans(seat.playerId, scoreDeltas[idx]);
-        }
       }
     });
 
+    const dealerIdx = this.dealerSeatId >= 0 ? this.dealerSeatId : 0;
+    const dealerCallMult = Math.max(1, this.callMultipliers[dealerIdx] || 1);
+
+    storageService.recordSettlement(
+      this.roomId,
+      this.gameType,
+      this.baseScore,
+      dealerCallMult,
+      scoreDeltas[dealerIdx] >= 0 ? 'banker' : 'player',
+      this.seats
+        .map((seat, idx) => {
+          if (!seat) return null!;
+          const res = this.handResults[idx];
+          return {
+            playerId: seat.playerId,
+            nickname: seat.nickname,
+            isBot: seat.isBot,
+            role:
+              this.playMode === 'tongbi'
+                ? `通比·${res?.name || '无牛'}`
+                : idx === dealerIdx
+                ? `庄家(${dealerCallMult}倍)·${res?.name || '无牛'}`
+                : `闲家(${this.betMultipliers[idx] || 5}倍)·${res?.name || '无牛'}`,
+            scoreDelta: scoreDeltas[idx],
+            isWinner: scoreDeltas[idx] > 0,
+          };
+        })
+        .filter(Boolean)
+    );
+
     this.currentSettlement = {
       baseScore: this.baseScore,
-      dealerSeatIndex: this.dealerSeatId,
-      players: this.seats.map((seat, idx) => {
-        if (!seat) return null!;
-        const res = this.handResults[idx]!;
-        return {
-          seatIndex: idx,
-          playerId: seat.playerId,
-          nickname: seat.nickname,
-          isDealer: idx === this.dealerSeatId,
-          handType: res.handType,
-          handName: res.name,
-          cards: this.hands[idx],
-          scoreDelta: scoreDeltas[idx],
-          balance: seat.beans,
-          isWinner: scoreDeltas[idx] > 0,
-        };
-      }).filter(Boolean),
+      playMode: this.playMode,
+      dealerSeatIndex: dealerIdx,
+      players: this.seats
+        .map((seat, idx) => {
+          if (!seat) return null!;
+          const res =
+            this.handResults[idx] ??
+            evaluateNiuniuHand(this.hands[idx], this.playMode);
+          return {
+            seatIndex: idx,
+            playerId: seat.playerId,
+            nickname: seat.nickname,
+            avatarId: seat.avatarId,
+            isDealer: idx === dealerIdx && this.playMode !== 'tongbi',
+            callMultiplier: this.callMultipliers[idx],
+            betMultiplier: this.betMultipliers[idx],
+            handType: res.handType,
+            handName: res.name,
+            handMultiplier: res.multiplier,
+            cards: this.hands[idx],
+            scoreDelta: scoreDeltas[idx],
+            balance: seat.beans,
+            isWinner: scoreDeltas[idx] > 0,
+          };
+        })
+        .filter(Boolean),
     };
 
     this.broadcastSnapshot();
 
-    // 2.5s later show round result
     this.phaseTimer = setTimeout(() => {
       this.phase = 'ROUND_RESULT';
       this.broadcastSnapshot();
 
-      // Auto countdown 6s to ready next round
-      this.startCountdown(6, () => {
+      this.startCountdown(7, () => {
         this.seats.forEach((s) => {
           if (s) s.ready = true;
         });
         this.checkAutoStart();
       });
-    }, 2500);
+    }, 2400);
   }
 
   // =========================================================================
-  // Snapshot Serialization
+  // Snapshot Serialization (Enforces 4明1暗 in 看牌抢庄)
   // =========================================================================
 
   private buildSnapshot(targetPlayerId?: string): NiuniuTableSnapshot {
     const targetSeatIndex = this.seats.findIndex((s) => s?.playerId === targetPlayerId);
 
+    const isFifthCardDealt =
+      this.phase === 'DEAL_5TH' ||
+      this.phase === 'SHOWDOWN' ||
+      this.phase === 'COMPARE_AND_SETTLE' ||
+      this.phase === 'ROUND_RESULT';
+
+    const isCompareOrResult =
+      this.phase === 'COMPARE_AND_SETTLE' || this.phase === 'ROUND_RESULT';
+
     const mappedSeats: Array<NiuniuPlayerInfo | null> = this.seats.map((s, idx) => {
       if (!s) return null;
 
       const isSelf = idx === targetSeatIndex;
-      const isShowdown = this.phase === 'SHOWDOWN' || this.phase === 'COMPARE_AND_SETTLE' || this.phase === 'ROUND_RESULT';
-      const shouldRevealCards = isSelf || isShowdown || this.hasShownHand[idx];
+      const playerHasShown = this.hasShownHand[idx] || isCompareOrResult;
+      const rawHand = this.hands[idx] || [];
 
-      let visibleCards = this.hands[idx] || [];
-      if (!shouldRevealCards) {
-        // If not revealed, hide cards as face-down proxies
-        visibleCards = visibleCards.map((c, i) => ({
-          id: -100 - i,
-          suit: 'spade',
-          rank: 0,
-          value: 0,
-        }));
+      let visibleCards: NiuniuCard[] = [];
+      if (isSelf) {
+        if (isFifthCardDealt) {
+          visibleCards = rawHand;
+        } else {
+          // 看牌抢庄核心：前4张明牌，第5张暗牌
+          visibleCards = rawHand.map((c, i) =>
+            i < 4
+              ? c
+              : {
+                  id: -105,
+                  suit: 'spade',
+                  rank: 0,
+                  value: 0,
+                }
+          );
+        }
+      } else {
+        if (playerHasShown) {
+          visibleCards = rawHand;
+        } else {
+          visibleCards = rawHand.map((_, i) => ({
+            id: -100 - idx * 10 - i,
+            suit: 'spade',
+            rank: 0,
+            value: 0,
+          }));
+        }
       }
+
+      const showDealerBadge =
+        this.playMode !== 'tongbi' &&
+        idx === this.dealerSeatId &&
+        this.phase !== 'WAITING' &&
+        this.phase !== 'DEAL_FIRST_4' &&
+        this.phase !== 'CALL_BANKER';
 
       return {
         playerId: s.playerId,
@@ -606,10 +791,13 @@ export class NiuniuRoom implements IGameRoom {
         disconnected: s.disconnected,
         callMultiplier: this.callMultipliers[idx],
         betMultiplier: this.betMultipliers[idx],
-        isDealer: idx === this.dealerSeatId && this.phase !== 'WAITING' && this.phase !== 'DEAL_FIRST_4' && this.phase !== 'CALL_BANKER',
+        isDealer: showDealerBadge,
         cards: visibleCards,
         hasShownHand: this.hasShownHand[idx],
-        handResult: (isSelf || isShowdown || this.hasShownHand[idx]) ? this.handResults[idx] : undefined,
+        handResult:
+          (isSelf && isFifthCardDealt) || playerHasShown
+            ? this.handResults[idx]
+            : undefined,
         scoreDelta: this.scoreDeltas[idx],
       };
     });

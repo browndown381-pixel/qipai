@@ -181,74 +181,28 @@ export class GameScene extends Container {
       .ellipse(w / 2, 320, spotW * 0.6, 140)
       .fill({ color: 0x156c4e, alpha: 0.25 });
 
-    // 4. Inlaid Gold Fretwork Inner Frame & Corner Cloud Ornaments
+    // 4. Clean Gold Hairline Inner Trim (Minimalist commercial poker table frame)
     const goldInlay = new Graphics();
     goldInlay
       .roundRect(46, 38, w - 92, h - 76, 24)
-      .stroke({ color: 0xf59e0b, width: 1.5, alpha: 0.35 });
-    goldInlay
-      .roundRect(52, 44, w - 104, h - 88, 20)
-      .stroke({ color: 0xfde68a, width: 0.8, alpha: 0.18 });
+      .stroke({ color: 0xf59e0b, width: 1.2, alpha: 0.24 });
 
-    // 4 Corner Chinese Meander Motifs
-    const cornerOffsets = [
-      [66, 58],
-      [w - 66, 58],
-      [66, h - 58],
-      [w - 66, h - 58],
-    ];
-    for (const [cx, cy] of cornerOffsets) {
-      goldInlay.circle(cx, cy, 8).stroke({ color: 0xf59e0b, width: 1.5, alpha: 0.38 });
-      goldInlay.circle(cx, cy, 3).fill({ color: 0xfde68a, alpha: 0.38 });
-    }
-
-    // 5. Center Auspicious Medallion Emblem
-    const medallion = new Graphics();
+    // 5. Subtle Center Table Watermark
     const mX = w / 2;
-    const mY = 282;
-    medallion.circle(mX, mY, 86).stroke({ color: 0xf59e0b, width: 1.5, alpha: 0.13 });
-    medallion.circle(mX, mY, 72).stroke({ color: 0xfde68a, width: 1, alpha: 0.09 });
-    medallion
-      .moveTo(mX, mY - 56)
-      .lineTo(mX + 56, mY)
-      .lineTo(mX, mY + 56)
-      .lineTo(mX - 56, mY)
-      .closePath()
-      .stroke({ color: 0xf59e0b, width: 1, alpha: 0.1 });
-
+    const mY = 278;
     const centerMark = new Text({
-      text: '欢 乐 斗 地 主 · 3D 竞 技 台',
+      text: '斗 地 主',
       style: {
         fontFamily: 'Outfit, PingFang SC, Microsoft YaHei, sans-serif',
-        fontSize: 18,
+        fontSize: 26,
         fontWeight: '800',
         fill: 0xfde68a,
-        letterSpacing: 3,
+        letterSpacing: 12,
       },
     });
-    centerMark.alpha = 0.14;
+    centerMark.alpha = 0.055;
     centerMark.anchor.set(0.5);
     centerMark.position.set(mX, mY);
-
-    // 6. 3D Perspective Trapezoidal Depth Rim & Horizon Lines
-    const perspectiveGrid = new Graphics();
-    const gridPadTop = Math.max(160, Math.round(w * 0.12));
-    const gridPadBot = Math.max(76, Math.round(w * 0.06));
-    perspectiveGrid
-      .moveTo(gridPadTop, 128)
-      .lineTo(w - gridPadTop, 128)
-      .lineTo(w - gridPadBot, 472)
-      .lineTo(gridPadBot, 472)
-      .closePath()
-      .stroke({ color: 0xf59e0b, width: 1.4, alpha: 0.22 });
-    perspectiveGrid
-      .moveTo(gridPadTop + 25, 142)
-      .lineTo(w - gridPadTop - 25, 142)
-      .lineTo(w - gridPadBot - 28, 456)
-      .lineTo(gridPadBot + 28, 456)
-      .closePath()
-      .fill({ color: 0x0b4b35, alpha: 0.22 })
-      .stroke({ color: 0x34d399, width: 1, alpha: 0.14 });
 
     felt.eventMode = 'static';
     felt.on('pointerdown', (e: FederatedPointerEvent) => {
@@ -265,9 +219,7 @@ export class GameScene extends Container {
       mahoganyOuter,
       mahoganyInnerBevel,
       felt,
-      perspectiveGrid,
       goldInlay,
-      medallion,
       centerMark
     );
   }
@@ -384,35 +336,96 @@ export class GameScene extends Container {
     return { container, countText, alertBadge };
   }
 
+  private baseScoreValueText!: Text;
+  private multiplierValueText!: Text;
+
   /**
-   * Build Imperial Recessed Tray for the 3 Landlord Hole Cards.
+   * Build Integrated Top-Center Console for the 3 Landlord Hole Cards + Base Score & Multiplier.
    */
   private buildLandlordCardsArea(): void {
-    this.landlordCardsArea.position.set(this.virtualWidth / 2, 58);
+    this.landlordCardsArea.position.set(this.virtualWidth / 2, 54);
 
-    // Ornate carved tray with gilded rim
+    // Unified commercial top console tray: Left wing (底分) | Center (3张底牌) | Right wing (倍数)
     const tray = new Graphics();
     tray
-      .roundRect(-132, -42, 264, 84, 16)
+      .roundRect(-204, -40, 408, 80, 18)
       .fill({ color: 0x041a12, alpha: 0.92 })
-      .stroke({ color: 0xf59e0b, width: 2, alpha: 0.72 });
+      .stroke({ color: 0xf59e0b, width: 1.8, alpha: 0.68 });
     tray
-      .roundRect(-126, -36, 252, 72, 12)
-      .stroke({ color: 0xfef08a, width: 0.8, alpha: 0.25 });
+      .roundRect(-108, -35, 216, 70, 12)
+      .fill({ color: 0x02120c, alpha: 0.65 })
+      .stroke({ color: 0xfef08a, width: 0.8, alpha: 0.22 });
     this.landlordCardsArea.addChild(tray);
 
+    // Left Wing: Base Score (底分)
+    const baseLabel = new Text({
+      text: '底分',
+      style: {
+        fontFamily: 'PingFang SC, Microsoft YaHei, sans-serif',
+        fontSize: 11,
+        fontWeight: 'bold',
+        fill: 0x6ee7b7,
+      },
+    });
+    baseLabel.anchor.set(0.5);
+    baseLabel.position.set(-156, -12);
+
+    this.baseScoreValueText = new Text({
+      text: '100',
+      style: {
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 16,
+        fontWeight: '800',
+        fill: 0xfef08a,
+      },
+    });
+    this.baseScoreValueText.anchor.set(0.5);
+    this.baseScoreValueText.position.set(-156, 11);
+
+    // Right Wing: Multiplier (倍数)
+    const mulLabel = new Text({
+      text: '倍数',
+      style: {
+        fontFamily: 'PingFang SC, Microsoft YaHei, sans-serif',
+        fontSize: 11,
+        fontWeight: 'bold',
+        fill: 0x6ee7b7,
+      },
+    });
+    mulLabel.anchor.set(0.5);
+    mulLabel.position.set(156, -12);
+
+    this.multiplierValueText = new Text({
+      text: '×1',
+      style: {
+        fontFamily: 'JetBrains Mono, monospace',
+        fontSize: 16,
+        fontWeight: '800',
+        fill: 0xfbbf24,
+      },
+    });
+    this.multiplierValueText.anchor.set(0.5);
+    this.multiplierValueText.position.set(156, 11);
+
+    this.landlordCardsArea.addChild(
+      baseLabel,
+      this.baseScoreValueText,
+      mulLabel,
+      this.multiplierValueText
+    );
+
     this.bottomTagBadge = new Container();
-    this.bottomTagBadge.position.set(122, -36);
+    this.bottomTagBadge.position.set(0, 40);
     const tagBg = new Graphics();
     tagBg
-      .roundRect(-38, -12, 76, 24, 12)
+      .roundRect(-38, -11, 76, 22, 11)
       .fill({ color: 0xd97706 })
-      .stroke({ color: 0xfef08a, width: 1.6 });
+      .stroke({ color: 0xfef08a, width: 1.5 });
     this.bottomTagText = new Text({
       text: '特殊底牌',
       style: {
         fontFamily: 'PingFang SC, sans-serif',
-        fontSize: 11,
+        fontSize: 10,
         fontWeight: 'bold',
         fill: 0x18181b,
       },
@@ -564,16 +577,16 @@ export class GameScene extends Container {
 
   private buildUILayer(): void {
     this.scoreDisplayText = new Text({
-      text: '底分 100  ·  倍数 ×1',
+      text: '',
       style: {
         fontFamily: 'JetBrains Mono, PingFang SC, sans-serif',
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: 'bold',
         fill: 0xfde68a,
       },
     });
     this.scoreDisplayText.anchor.set(0.5);
-    this.scoreDisplayText.position.set(this.virtualWidth / 2, 115);
+    this.scoreDisplayText.visible = false;
     this.uiLayer.addChild(this.scoreDisplayText);
 
     this.buildTurnTimer();
@@ -606,11 +619,13 @@ export class GameScene extends Container {
   }
 
   updateScoreAndMultiplier(baseScore: number, multiplier: number): void {
-    if (this.destroyed || !this.scoreDisplayText || this.scoreDisplayText.destroyed) return;
-    const maxCap =
-      baseScore >= 2000 ? 256 : baseScore >= 800 ? 128 : baseScore >= 300 ? 64 : 32;
-    const capSuffix = multiplier >= maxCap ? ` (已达封顶 ×${maxCap})` : ` · 封顶 ×${maxCap}`;
-    this.scoreDisplayText.text = `底分 ${baseScore}  ·  倍数 ×${multiplier}${capSuffix}`;
+    if (this.destroyed) return;
+    if (this.baseScoreValueText && !this.baseScoreValueText.destroyed) {
+      this.baseScoreValueText.text = String(baseScore);
+    }
+    if (this.multiplierValueText && !this.multiplierValueText.destroyed) {
+      this.multiplierValueText.text = `×${multiplier}`;
+    }
   }
 
   private prevLeftCount: number = 17;
@@ -619,12 +634,14 @@ export class GameScene extends Container {
   updateOpponentCardCounts(leftCount: number, rightCount: number): void {
     if (this.destroyed) return;
     if (leftCount > 0 && leftCount <= 2 && this.prevLeftCount > leftCount) {
-      soundEngine.playDdzActionVoice(leftCount === 1 ? 'baojing1' : 'baojing2');
       soundEngine.playDdzSfx('alert');
+      const alertVoice = leftCount === 1 ? 'baojing1' : 'baojing2';
+      soundEngine.playDdzActionVoice(alertVoice);
     }
     if (rightCount > 0 && rightCount <= 2 && this.prevRightCount > rightCount) {
-      soundEngine.playDdzActionVoice(rightCount === 1 ? 'baojing1' : 'baojing2');
       soundEngine.playDdzSfx('alert');
+      const alertVoice = rightCount === 1 ? 'baojing1' : 'baojing2';
+      soundEngine.playDdzActionVoice(alertVoice);
     }
     this.prevLeftCount = leftCount;
     this.prevRightCount = rightCount;
@@ -892,7 +909,24 @@ export class GameScene extends Container {
       return;
     }
 
-    const cards = action.cards;
+    // Sort played cards canonically: main Triples/Quads on the left, kickers/wings on the right
+    const freqMap = new Map<number, number>();
+    for (const c of action.cards) {
+      freqMap.set(c.value, (freqMap.get(c.value) ?? 0) + 1);
+    }
+    const hasTripleOrQuad = Array.from(freqMap.values()).some((cnt) => cnt >= 3);
+    const cards = hasTripleOrQuad
+      ? [...action.cards].sort((a, b) => {
+          const ca = freqMap.get(a.value) ?? 1;
+          const cb = freqMap.get(b.value) ?? 1;
+          const ga = ca >= 3 ? ca : 0;
+          const gb = cb >= 3 ? cb : 0;
+          if (gb !== ga) return gb - ga;
+          if (cb !== ca) return cb - ca;
+          return b.value - a.value;
+        })
+      : [...action.cards];
+
     const count = cards.length;
     const step = 30;
     const totalW = (count - 1) * step;

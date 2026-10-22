@@ -21,11 +21,18 @@ export interface ReplayViewerModalProps {
   onClose: () => void;
 }
 
-const SUIT_SYMBOL: Record<Exclude<Suit, null>, { symbol: string; colorClass: string }> = {
-  spade: { symbol: '♠', colorClass: 'text-zinc-900' },
-  heart: { symbol: '♥', colorClass: 'text-rose-600' },
-  club: { symbol: '♣', colorClass: 'text-zinc-900' },
-  diamond: { symbol: '♦', colorClass: 'text-rose-600' },
+const SUIT_ASSET_NAME: Record<Exclude<Suit, null>, string> = {
+  spade: 'Spade',
+  heart: 'Heart',
+  club: 'Club',
+  diamond: 'Diamond',
+};
+
+const getCardAssetPath = (card: CardData): string => {
+  if (card.rank === 'big_joker') return '/assets/ddz/cards/Card_Joker_Red_BigKing.png';
+  if (card.rank === 'small_joker') return '/assets/ddz/cards/Card_Joker_Black_SmallKing.png';
+  const suitPrefix = card.suit ? SUIT_ASSET_NAME[card.suit] : 'Spade';
+  return `/assets/ddz/cards/Card_${suitPrefix}_${card.rank}.png`;
 };
 
 const DEAL_MODE_LABELS: Record<string, string> = {
@@ -43,49 +50,31 @@ const MiniPokerCard: React.FC<{
   highlight?: boolean;
 }> = ({ card, wildRanks, size = 'sm', highlight = false }) => {
   const isWild = Boolean(card.isWild || wildRanks.includes(card.rank));
-  const isJoker = card.rank === 'small_joker' || card.rank === 'big_joker';
-  const isBigJoker = card.rank === 'big_joker';
-  const suitInfo = card.suit ? SUIT_SYMBOL[card.suit] : null;
+  const imgSrc = getCardAssetPath(card);
 
   return (
     <div
-      className={`relative flex flex-col justify-between rounded-md border select-none shadow-sm transition-transform ${
-        size === 'md' ? 'h-12 w-9 px-1 py-0.5' : 'h-9 w-7 px-0.5 py-0.5'
+      className={`relative flex items-center justify-center overflow-hidden rounded-md select-none shadow-sm transition-transform ${
+        size === 'md' ? 'h-12 w-9' : 'h-9 w-7'
       } ${
         isWild
-          ? 'border-amber-400 bg-amber-50 ring-1 ring-amber-400/60'
+          ? 'ring-2 ring-amber-400 shadow-amber-400/40'
           : highlight
-            ? 'border-amber-300 bg-[#FFFDF9] -translate-y-1'
-            : 'border-stone-300 bg-[#FFFDF9]'
+            ? 'ring-1 ring-amber-300 -translate-y-1'
+            : ''
       }`}
     >
-      <div
-        className={`font-display leading-none font-extrabold ${
-          size === 'md' ? 'text-xs' : 'text-[10px]'
-        } ${
-          isJoker
-            ? isBigJoker
-              ? 'text-rose-600'
-              : 'text-slate-800'
-            : suitInfo?.colorClass ?? 'text-zinc-900'
-        }`}
-      >
-        {isJoker ? (isBigJoker ? '大王' : '小王') : card.rank}
-      </div>
-      <div className="flex items-center justify-between leading-none">
-        {suitInfo && !isJoker ? (
-          <span className={`${size === 'md' ? 'text-xs' : 'text-[10px]'} ${suitInfo.colorClass}`}>
-            {suitInfo.symbol}
-          </span>
-        ) : (
-          <span className="text-[9px] font-bold text-amber-600">{isJoker ? '王' : ''}</span>
-        )}
-        {isWild && (
-          <span className="rounded bg-amber-500 px-0.5 text-[8px] font-extrabold text-amber-950">
-            赖
-          </span>
-        )}
-      </div>
+      <img
+        src={imgSrc}
+        alt={card.rank}
+        className="h-full w-full object-contain pointer-events-none"
+        draggable={false}
+      />
+      {isWild && (
+        <span className="absolute right-0.5 bottom-0.5 rounded bg-amber-500 px-0.5 text-[8px] leading-tight font-extrabold text-amber-950 shadow">
+          赖
+        </span>
+      )}
     </div>
   );
 };

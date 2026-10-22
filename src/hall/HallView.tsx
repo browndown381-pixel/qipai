@@ -18,7 +18,6 @@ import { DdzArenaGrid } from './components/DdzArenaGrid';
 import { MahjongArenaGrid } from './components/MahjongArenaGrid';
 import { NiuniuArenaGrid } from './components/NiuniuArenaGrid';
 import { ZjhArenaGrid } from './components/ZjhArenaGrid';
-import { QuickStartFab } from './components/QuickStartFab';
 import { CommercialTierCardSpec } from './components/TierCard';
 import { InsufficientBeansModal } from './components/modals/InsufficientBeansModal';
 import { FriendRoomModal } from './components/modals/FriendRoomModal';
@@ -150,7 +149,13 @@ export const HallView: React.FC<HallViewProps> = ({
   const [loadingReplayId, setLoadingReplayId] = useState<string | null>(null);
 
   // Extras
-  const [bonusRoomCards, setBonusRoomCards] = useState<number>(0);
+  const [bonusRoomCards, setBonusRoomCards] = useState<number>(() => {
+    try {
+      return Number(localStorage.getItem('h5_bonus_room_cards') || '0') || 0;
+    } catch {
+      return 0;
+    }
+  });
   const [roomCardToast, setRoomCardToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -179,12 +184,24 @@ export const HallView: React.FC<HallViewProps> = ({
     );
   }, [myBeans]);
 
+  const showToastMessage = (msg: string) => {
+    setRoomCardToast(msg);
+    window.setTimeout(() => setRoomCardToast(null), 2400);
+  };
+
   const handleClaimRoomCards = () => {
     soundEngine.playPowerChime(2);
     hapticEngine.tap();
-    setBonusRoomCards((prev) => prev + 5);
-    setRoomCardToast('已免费领取 +5 张好友房卡');
-    window.setTimeout(() => setRoomCardToast(null), 2200);
+    setBonusRoomCards((prev) => {
+      const next = prev + 5;
+      try {
+        localStorage.setItem('h5_bonus_room_cards', String(next));
+      } catch {
+        // Ignore storage error
+      }
+      return next;
+    });
+    showToastMessage('已免费补充 +5 张好友房卡');
   };
 
   const handleOpenMatchReplay = async (match: MatchRecord) => {
@@ -241,7 +258,23 @@ export const HallView: React.FC<HallViewProps> = ({
   const isMainPortal = portalStage === 'main_portal';
 
   return (
-    <div className="relative flex h-full w-full flex-col justify-between overflow-hidden bg-gradient-to-b from-[#1c202d] via-[#141722] to-[#0c0e15] select-none text-[#FAF8F5]">
+    <div
+      className="relative flex h-full w-full flex-col justify-between overflow-hidden bg-[#e8d5b5] bg-cover bg-center select-none text-[#FAF8F5]"
+      style={{
+        backgroundImage: isMainPortal
+          ? 'url(/assets/ui/lobby_bg.png)'
+          : 'url(/assets/ui/lobby_bg.png)',
+      }}
+    >
+      {/* Warm Sunlit Commercial Atmosphere Overlay (keeps background bright & scenic while ensuring card contrast) */}
+      <div
+        className={`pointer-events-none absolute inset-0 transition-colors duration-300 ${
+          isMainPortal
+            ? 'bg-gradient-to-b from-[#2b180a]/15 via-transparent to-[#241307]/25'
+            : 'bg-gradient-to-b from-[#1e120a]/35 via-[#1a1008]/20 to-[#1e120a]/40 backdrop-blur-[2px]'
+        }`}
+      />
+
       {/* Background Subtle Floating Micro-Particles */}
       <AmbientParticles />
 
@@ -261,11 +294,12 @@ export const HallView: React.FC<HallViewProps> = ({
         onClaimRoomCards={handleClaimRoomCards}
         onClaimSupply={onClaimSupply}
         onOpenSettings={() => setShowSettingsModal(true)}
+        onCopyIdSuccess={(copiedId) => showToastMessage(`已复制玩家 ID: ${copiedId}`)}
       />
 
       {/* Floating Notice / Toast */}
       {(notice || roomCardToast) && (
-        <div className="pointer-events-none fixed top-14 left-1/2 z-50 -translate-x-1/2 rounded-full border border-amber-400/60 bg-[#1b0e07]/95 px-4 py-1 text-xs font-bold text-amber-200 shadow-2xl whitespace-nowrap animate-in fade-in">
+        <div className="pointer-events-none fixed top-15 left-1/2 z-50 -translate-x-1/2 rounded-full border border-amber-300/80 bg-[#291509]/95 px-4 py-1 text-xs font-extrabold text-amber-200 shadow-2xl whitespace-nowrap animate-in fade-in">
           {roomCardToast || notice}
         </div>
       )}
@@ -285,6 +319,7 @@ export const HallView: React.FC<HallViewProps> = ({
           <div className="flex h-full w-full flex-1 flex-col items-center justify-center animate-in fade-in zoom-in-[0.99] duration-200">
             <RegionalGamePortal
               myBeans={myBeans}
+              rooms={rooms}
               onEnterDdzHall={() => {
                 soundEngine.playCardPlace(true);
                 setPortalStage('ddz_subhall');
@@ -305,11 +340,20 @@ export const HallView: React.FC<HallViewProps> = ({
               onQuickStartMahjong={() => onQuickMatchMahjong?.(100)}
               onQuickStartGame={(gameKey, baseScore) => {
                 soundEngine.playCardPlace(true);
+                if (gameKey === 'niuniu') {
+                  onQuickMatchNiuniu?.(baseScore, 'qiangzhuang');
+                  return;
+                }
                 if (gameKey === 'zhajinhua') {
                   onQuickMatchZhajinhua?.(baseScore, 'classic');
                   return;
                 }
-                onQuickMatch(baseScore, true, 'classic');
+                const titleMap: Record<string, string> = {
+                  laoyancai: '滇西捞腌菜',
+                  shuangko: '千变双扣',
+                  sihepai: '传统四合牌',
+                };
+                showToastMessage(`【${titleMap[gameKey] ?? '地方特色'}】专区即将开放，敬请期待！`);
               }}
             />
           </div>
@@ -329,22 +373,6 @@ export const HallView: React.FC<HallViewProps> = ({
               }}
               onClickTier={handleClickTierCard}
             />
-
-            {/* Quick Start Floating Button in Sub-Hall */}
-            {ddzArenaMode !== 'puzzle' && (
-              <div
-                className="absolute z-30 sm:bottom-3 sm:right-3"
-                style={{
-                  bottom: 'max(0.6rem, env(safe-area-inset-bottom, 0px))',
-                  right: 'max(0.6rem, env(safe-area-inset-right, 0px))',
-                }}
-              >
-                <QuickStartFab
-                  onQuickStart={handleQuickStart}
-                  recommendedScore={recommendedTier.baseScore}
-                />
-              </div>
-            )}
           </div>
         )}
 
@@ -538,6 +566,10 @@ export const HallView: React.FC<HallViewProps> = ({
           onClose={() => setShowSettingsModal(false)}
           onOpenProfile={() => setShowProfileModal(true)}
           onOpenPuzzle={() => setShowPuzzleModal(true)}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={onToggleFullscreen}
+          myBeans={myBeans}
+          onClaimSupply={onClaimSupply}
         />
       )}
 

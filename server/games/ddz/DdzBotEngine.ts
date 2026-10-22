@@ -44,15 +44,37 @@ interface SequenceSearchState {
 }
 
 /**
- * Commercial-grade Dou Dizhu AI & Zero-Breakage Hint Engine 5.0:
- * 1. DFS Branch-and-Bound (分支定界) Optimal Hand Partitioning Tree with Laizi Gap Repair
- * 2. 4-Tier Zero-Breakage Priority Hint Engine (零损拆牌优先四级智能提示 + 赖子百变合成)
+ * Commercial-grade Dou Dizhu Core Hand Decomposition & Priority-Queue Decision Engine:
+ * 1. DFS Branch-and-Bound Optimal Hand Partitioning Tree with Triple/Pair Preservation Sub-Window Splitting
+ * 2. 4-Tier Zero-Breakage Priority Queue Hint Engine (零损提牌 -> 无损修剪/赖子合成 -> 最小损拆牌 -> 炸弹/王炸兜底)
  * 3. Role-aware Peasant Cooperation (Gatekeeper vs Feeder) & Endgame Suppression
  */
 export class DdzBotEngine {
   /**
+   * Formats a `HandPartition` into a human-readable structured summary for console debugging.
+   */
+  static formatPartitionSummary(part: HandPartition): Record<string, string | number> {
+    const fmtGroup = (groups: CardData[][]) =>
+      groups.length === 0 ? '无' : groups.map((g) => DdzRules.formatCards(g)).join(' | ');
+    return {
+      王炸: fmtGroup(part.rockets),
+      炸弹: fmtGroup(part.bombs),
+      飞机: fmtGroup(part.airplanes),
+      顺子: fmtGroup(part.straights),
+      连对: fmtGroup(part.consecutivePairs),
+      三张: fmtGroup(part.triples),
+      对子: fmtGroup(part.pairs),
+      单张: fmtGroup(part.singles),
+      预估手数_netTurns: part.netTurns,
+      控制分_controlScore: Number(part.controlScore.toFixed(1)),
+      结构分_structuralScore: Number(part.structuralScore.toFixed(1)),
+    };
+  }
+
+  /**
    * Partition a hand into structural combos using DFS Branch-and-Bound search
    * to globally minimize `netTurns` and maximize `structuralScore`.
+   * Evaluates candidate sub-straights that preserve internal Triples and Pairs.
    */
   static partitionHand(cards: CardData[], wildRanks: Rank[] = []): HandPartition {
     const wildSet = new Set<Rank>(wildRanks);
@@ -69,8 +91,10 @@ export class DdzBotEngine {
     }
 
     // 2. Extract 4-of-a-kind Bombs (Hard Bombs or Pure 4-Wild Bombs)
-    for (const [val, group] of Array.from(valMap.entries())) {
-      if (group.length === 4) {
+    const sortedValsAsc = Array.from(valMap.keys()).sort((a, b) => a - b);
+    for (const val of sortedValsAsc) {
+      const group = valMap.get(val);
+      if (group && group.length === 4) {
         bombs.push([...group]);
         valMap.delete(val);
       }
@@ -100,7 +124,7 @@ export class DdzBotEngine {
 
     // 3. Run DFS Branch-and-Bound search over 3..14 to find optimal sequence extraction
     let nodesVisited = 0;
-    const MAX_DFS_NODES = 160;
+    const MAX_DFS_NODES = 240;
     let bestState: SequenceSearchState | null = null;
 
     const evaluateLeaf = (
@@ -153,7 +177,8 @@ export class DdzBotEngine {
         straights.reduce((acc, st) => acc + st.length * 2.2, 0) +
         allTriples.length * 9 +
         allPairs.length * 3 -
-        allSingles.filter((s) => s[0].value <= 10).length * 4;
+        allSingles.filter((s) => s[0].value <= 10).length * 4.5 -
+        allSingles.filter((s) => s[0].value > 10 && s[0].value <= 14).length * 2.2;
 
       return {
         airplanes: airplanes.map((a) => [...a]),
@@ -190,7 +215,7 @@ export class DdzBotEngine {
       if (nodesVisited >= MAX_DFS_NODES) return;
 
       const extractedCount = airplanes.length + consecutivePairs.length + straights.length;
-      if (bestState && extractedCount > bestState.netTurns + 1) {
+      if (bestState && extractedCount > bestState.netTurns + 2) {
         return;
       }
 
@@ -215,9 +240,14 @@ export class DdzBotEngine {
             planeCards.push(...grp.splice(0, 3));
             if (grp.length === 0) nextPool.delete(v);
           }
-          dfs(nextPool, [...airplanes, planeCards], consecutivePairs, straights);
-          break;
+          dfs(
+            nextPool,
+            [...airplanes, DdzRules.sortCardsDesc(planeCards)],
+            consecutivePairs,
+            straights
+          );
         }
+        i = j;
       }
 
       // Candidate 2: Extract Consecutive Pairs (length >= 3 pairs)
@@ -243,13 +273,19 @@ export class DdzBotEngine {
               cpCards.push(...grp.splice(0, 2));
               if (grp.length === 0) nextPool.delete(v);
             }
-            dfs(nextPool, airplanes, [...consecutivePairs, cpCards], straights);
+            dfs(
+              nextPool,
+              airplanes,
+              [...consecutivePairs, DdzRules.sortCardsDesc(cpCards)],
+              straights
+            );
           }
-          break;
         }
+        i = j;
       }
 
       // Candidate 3: Extract Straight (length >= 5 consecutive singles)
+      // Generates candidate sub-windows: full span, edge-trimmed spans, and triple-preserving sub-spans
       const singleVals = Array.from(pool.entries())
         .filter(([, g]) => g.length >= 1)
         .map(([v]) => v)
@@ -262,46 +298,57 @@ export class DdzBotEngine {
         }
         const runLen = j - i + 1;
         if (runLen >= 5) {
-          {
+          const candidateWindows: Array<[number, number]> = [[i, j]];
+          const seenWin = new Set<string>([`${i}_${j}`]);
+          const addWindow = (s: number, e: number) => {
+            if (e - s + 1 < 5) return;
+            const key = `${s}_${e}`;
+            if (!seenWin.has(key)) {
+              seenWin.add(key);
+              candidateWindows.push([s, e]);
+            }
+          };
+
+          // Trim edges if endpoints hold Pairs or Triples
+          if (runLen >= 6) {
+            if ((pool.get(singleVals[i])?.length ?? 0) >= 2) addWindow(i + 1, j);
+            if ((pool.get(singleVals[j])?.length ?? 0) >= 2) addWindow(i, j - 1);
+          }
+          if (runLen >= 7) {
+            if (
+              (pool.get(singleVals[i])?.length ?? 0) >= 2 &&
+              (pool.get(singleVals[j])?.length ?? 0) >= 2
+            ) {
+              addWindow(i + 1, j - 1);
+            }
+          }
+
+          // Split around internal Triples (e.g. 3-4-5-6-7-888-9 -> test 3-4-5-6-7 keeping 888 intact)
+          for (let k = i; k <= j; k++) {
+            if ((pool.get(singleVals[k])?.length ?? 0) === 3) {
+              addWindow(i, k - 1);
+              addWindow(k + 1, j);
+            }
+          }
+
+          for (const [wStart, wEnd] of candidateWindows) {
             const nextPool = this.clonePool(pool);
             const stCards: CardData[] = [];
-            for (let k = i; k <= j; k++) {
+            for (let k = wStart; k <= wEnd; k++) {
               const v = singleVals[k];
               const grp = nextPool.get(v)!;
               stCards.push(grp.pop()!);
               if (grp.length === 0) nextPool.delete(v);
             }
-            dfs(nextPool, airplanes, consecutivePairs, [...straights, stCards]);
+            dfs(
+              nextPool,
+              airplanes,
+              consecutivePairs,
+              [...straights, DdzRules.sortCardsDesc(stCards)]
+            );
           }
-
-          if (runLen >= 6) {
-            const firstV = singleVals[i];
-            const lastV = singleVals[j];
-            if ((pool.get(firstV)?.length ?? 0) >= 2) {
-              const nextPool = this.clonePool(pool);
-              const stCards: CardData[] = [];
-              for (let k = i + 1; k <= j; k++) {
-                const v = singleVals[k];
-                const grp = nextPool.get(v)!;
-                stCards.push(grp.pop()!);
-                if (grp.length === 0) nextPool.delete(v);
-              }
-              dfs(nextPool, airplanes, consecutivePairs, [...straights, stCards]);
-            }
-            if ((pool.get(lastV)?.length ?? 0) >= 2) {
-              const nextPool = this.clonePool(pool);
-              const stCards: CardData[] = [];
-              for (let k = i; k <= j - 1; k++) {
-                const v = singleVals[k];
-                const grp = nextPool.get(v)!;
-                stCards.push(grp.pop()!);
-                if (grp.length === 0) nextPool.delete(v);
-              }
-              dfs(nextPool, airplanes, consecutivePairs, [...straights, stCards]);
-            }
-          }
-          break;
         }
+        i = j;
       }
     };
 
@@ -343,9 +390,6 @@ export class DdzBotEngine {
     return next;
   }
 
-  /**
-   * Decide whether AI should call or grab landlord.
-   */
   static shouldCallOrGrab(
     cards: CardData[],
     isGrabPhase: boolean,
@@ -362,9 +406,6 @@ export class DdzBotEngine {
     return part.controlScore >= 9 || (part.controlScore >= 7 && part.netTurns <= 5);
   }
 
-  /**
-   * Decide whether AI should choose "不加倍" (1), "加倍 ×2" (2), or "超级加倍 ×4" (4) in DOUBLING phase.
-   */
   static chooseDoubleFactor(
     cards: CardData[],
     isLandlord: boolean,
@@ -387,7 +428,7 @@ export class DdzBotEngine {
   }
 
   /**
-   * 4-Tier Zero-Breakage Priority Hint Engine (`findAllPlayableMoves`) with Laizi Wild Synthesis:
+   * 4-Tier Zero-Breakage Priority Queue Hint Engine (`findAllPlayableMoves`) with Laizi Wild Synthesis:
    * - Tier 1 (Zero Breakage): Pure isolated combos from DFS optimal partition.
    * - Tier 2 (Zero-Turn-Penalty Edge Trimming & Laizi Combos): Trimming 6+ straights or using wild cards to complete pairs/triples/straights.
    * - Tier 3 (Minimal Net-Turn Loss Splitting): Splitting pairs/triples/sequences ordered by smallest post-move `netTurns` increase.
@@ -410,22 +451,23 @@ export class DdzBotEngine {
     const natDistinctAsc = Array.from(natMap.keys()).sort((a, b) => a - b);
 
     // If whole hand is a single valid pattern that beats target, prioritize it immediately!
-    const fullHandPattern = DdzRules.identifyPattern(sorted, wildRanks);
+    const fullHandPattern = DdzRules.identifyPatternFor(sorted, wildRanks, target);
     if (fullHandPattern && DdzRules.canBeat(fullHandPattern, target)) {
       if (!target) {
-        return [sorted];
+        return [fullHandPattern.cards];
       }
     }
 
     const part = this.partitionHand(sorted, wildRanks);
 
-    // Case A: Free Lead (target === null)
+    // Case A: Free Lead (target === null) — Commercial Priority Queue Lead Ordering
     if (!target) {
       const leadResults: CardData[][] = [];
       if (fullHandPattern) {
-        leadResults.push(sorted);
+        leadResults.push(fullHandPattern.cards);
       }
 
+      // 1. Airplanes (with optimal wings first, then pure airplane)
       for (const plane of part.airplanes) {
         const k = plane.length / 3;
         const planeIds = new Set(plane.map((c) => c.id));
@@ -455,40 +497,56 @@ export class DdzBotEngine {
         leadResults.push(plane);
       }
 
+      // 2. Straights & Consecutive Pairs
       for (const st of part.straights) leadResults.push(st);
       for (const cp of part.consecutivePairs) leadResults.push(cp);
 
-      for (const tr of part.triples) {
-        const trIds = new Set(tr.map((c) => c.id));
-        const trRanks = new Set([tr[0].value]);
-        const optSingleWing = DdzRules.selectOptimalWings(
-          sorted,
-          trIds,
-          trRanks,
-          1,
-          1,
-          wildRanks
-        );
-        const optPairWing = DdzRules.selectOptimalWings(
-          sorted,
-          trIds,
-          trRanks,
-          1,
-          2,
-          wildRanks
-        );
-        if (optSingleWing) {
-          leadResults.push([...tr, ...optSingleWing]);
-        }
-        if (optPairWing) {
-          leadResults.push([...tr, ...optPairWing]);
-        }
-        leadResults.push(tr);
-      }
+      // 3. Low-to-mid Triples (3..K, value <= 13) with optimal wings
+      const lowTriples = part.triples.filter((tr) => tr[0].value <= 13);
+      const highTriples = part.triples.filter((tr) => tr[0].value > 13);
 
-      for (const pr of part.pairs) leadResults.push(pr);
-      for (const sg of part.singles) leadResults.push(sg);
+      const appendTripleLeads = (triplesList: CardData[][]) => {
+        for (const tr of triplesList) {
+          const trIds = new Set(tr.map((c) => c.id));
+          const trRanks = new Set([tr[0].value]);
+          const optSingleWing = DdzRules.selectOptimalWings(
+            sorted,
+            trIds,
+            trRanks,
+            1,
+            1,
+            wildRanks
+          );
+          const optPairWing = DdzRules.selectOptimalWings(
+            sorted,
+            trIds,
+            trRanks,
+            1,
+            2,
+            wildRanks
+          );
+          if (optSingleWing) {
+            leadResults.push([...tr, ...optSingleWing]);
+          }
+          if (optPairWing) {
+            leadResults.push([...tr, ...optPairWing]);
+          }
+          leadResults.push(tr);
+        }
+      };
 
+      appendTripleLeads(lowTriples);
+
+      // 4. Low-to-mid Pairs & Singles (value <= 14)
+      for (const pr of part.pairs.filter((p) => p[0].value <= 14)) leadResults.push(pr);
+      for (const sg of part.singles.filter((s) => s[0].value <= 14)) leadResults.push(sg);
+
+      // 5. High Control Triples (AAA, 222) and High Pairs/Singles (2, Jokers)
+      appendTripleLeads(highTriples);
+      for (const pr of part.pairs.filter((p) => p[0].value > 14)) leadResults.push(pr);
+      for (const sg of part.singles.filter((s) => s[0].value > 14)) leadResults.push(sg);
+
+      // 6. Bombs & Rockets last
       for (const bm of part.bombs) leadResults.push(bm);
       for (const rk of part.rockets) leadResults.push(rk);
 
@@ -510,7 +568,7 @@ export class DdzBotEngine {
       fullHandPattern.type !== PatternType.ROCKET &&
       DdzRules.canBeat(fullHandPattern, target)
     ) {
-      tier1ZeroBreakage.push(sorted);
+      tier1ZeroBreakage.push(fullHandPattern.cards);
     }
 
     const bombValues = new Set(part.bombs.map((b) => b[0].value));
@@ -580,7 +638,6 @@ export class DdzBotEngine {
           }
         }
 
-        // Laizi synthesis: 1 natural single (> target.mainValue, <= 15) + 1 wild card
         if (wildPool.length >= 1) {
           for (const v of natDistinctAsc) {
             if (v > target.mainValue && v <= 15 && (natMap.get(v)?.length ?? 0) === 1) {
@@ -606,7 +663,6 @@ export class DdzBotEngine {
             tier3SplitCandidates.push(valMap.get(v)!.slice(0, 3));
           }
         }
-        // Laizi synthesis: natural pair + 1 wild
         if (wildPool.length >= 1) {
           for (const v of natDistinctAsc) {
             if (v > target.mainValue && v <= 15 && (natMap.get(v)?.length ?? 0) === 2) {
@@ -621,7 +677,6 @@ export class DdzBotEngine {
       }
 
       case PatternType.TRIPLE_SINGLE: {
-        // Whitepaper 2.3 Heuristic Zero-Loss Wing Selection via 15-Rank Histogram
         for (const tr of part.triples) {
           if (tr[0].value > target.mainValue) {
             const core = tr.slice(0, 3);
@@ -654,7 +709,6 @@ export class DdzBotEngine {
             }
           }
         }
-        // Laizi synthesis: natural pair + 1 wild + 1 heuristic zero-loss kicker
         if (wildPool.length >= 1) {
           const wCard = wildPool[wildPool.length - 1];
           for (const v of natDistinctAsc) {
@@ -678,7 +732,6 @@ export class DdzBotEngine {
       }
 
       case PatternType.TRIPLE_PAIR: {
-        // Whitepaper 2.3 Heuristic Zero-Loss Pair Wing Selection via 15-Rank Histogram
         for (const tr of part.triples) {
           if (tr[0].value > target.mainValue) {
             const core = tr.slice(0, 3);
@@ -742,7 +795,6 @@ export class DdzBotEngine {
           }
         }
 
-        // Laizi Gap-Repair Straight Synthesis
         if (wildPool.length >= 1) {
           for (
             let maxV = Math.max(target.mainValue + 1, 3 + len - 1);
@@ -802,7 +854,6 @@ export class DdzBotEngine {
           }
         }
 
-        // Laizi Gap-Repair Consecutive Pairs Synthesis
         if (wildPool.length >= 1) {
           for (
             let maxV = Math.max(target.mainValue + 1, 3 + pairCount - 1);
@@ -904,7 +955,7 @@ export class DdzBotEngine {
       const usedIds = new Set(cand.map((c) => c.id));
       const rem = sorted.filter((c) => !usedIds.has(c.id));
       const remPart = this.partitionHand(rem, wildRanks);
-      const mainVal = DdzRules.identifyPattern(cand, wildRanks)?.mainValue ?? 0;
+      const mainVal = DdzRules.identifyPatternFor(cand, wildRanks, target)?.mainValue ?? 0;
       return {
         cards: cand,
         postNetTurns: remPart.netTurns,
@@ -920,7 +971,6 @@ export class DdzBotEngine {
     // Tier 4: Soft Bombs (ascending) -> Hard Bombs (ascending) -> Pure Laizi Bomb -> Rocket last
     const tier4BombsAndRocket: CardData[][] = [];
 
-    // 4a. Soft Bombs (1~2 wilds + 2~3 natural cards of same rank <= 15)
     if (wildPool.length >= 1) {
       for (const v of natDistinctAsc) {
         if (v > 15) continue;
@@ -938,7 +988,6 @@ export class DdzBotEngine {
       }
     }
 
-    // 4b. Native Hard Bombs & Pure Laizi Bombs
     const sortedBombs = [...part.bombs].sort((a, b) => a[0].value - b[0].value);
     for (const bm of sortedBombs) {
       const bmPat = DdzRules.identifyPattern(bm, wildRanks);
@@ -947,7 +996,6 @@ export class DdzBotEngine {
       }
     }
 
-    // 4c. Pure 4-Wild Bomb if player holds >= 4 wild cards across 2 wild ranks (TianDi Laizi)
     if (wildPool.length >= 4) {
       const pureWildBomb = wildPool.slice(0, 4);
       const pwPat = DdzRules.identifyPattern(pureWildBomb, wildRanks);
@@ -956,7 +1004,6 @@ export class DdzBotEngine {
       }
     }
 
-    // 4d. Rocket
     for (const rk of part.rockets) {
       tier4BombsAndRocket.push(rk);
     }
@@ -974,20 +1021,23 @@ export class DdzBotEngine {
   }
 
   /**
-   * Final safety net: only keep moves the authoritative server rules would accept.
-   * Hint builders may merge wings into a longer chain (e.g. 333444555 + 666 -> 4-chain airplane)
-   * which the server then rejects - those must never be offered as hints / bot moves.
+   * Final safety net: only keep moves the authoritative server rules accept,
+   * and normalize each move's card order to the canonical pattern order.
    */
   private static filterLegalMoves(
     moves: CardData[][],
     target: ClassifiedPattern | null,
     wildRanks: Rank[]
   ): CardData[][] {
-    return moves.filter((m) => {
-      if (m.length === 0) return false;
+    const validMoves: CardData[][] = [];
+    for (const m of moves) {
+      if (m.length === 0) continue;
       const pattern = DdzRules.identifyPatternFor(m, wildRanks, target);
-      return pattern !== null && DdzRules.canBeat(pattern, target);
-    });
+      if (pattern !== null && DdzRules.canBeat(pattern, target)) {
+        validMoves.push(pattern.cards);
+      }
+    }
+    return validMoves;
   }
 
   /**
@@ -1054,7 +1104,7 @@ export class DdzBotEngine {
 
     // 4. Following an Enemy Play
     const firstMove = moves[0];
-    const firstPattern = DdzRules.identifyPattern(firstMove, wildRanks);
+    const firstPattern = DdzRules.identifyPatternFor(firstMove, wildRanks, targetPattern);
     if (!firstPattern) return [];
 
     if (firstPattern.type === PatternType.BOMB || firstPattern.type === PatternType.ROCKET) {
@@ -1072,7 +1122,6 @@ export class DdzBotEngine {
     }
 
     if (lastPlayerCardsLeft === 1 && targetPattern.type === PatternType.SINGLE) {
-      // Opponent is about to go out: play the HIGHEST single (moves are not ordered by value).
       const singles = moves.filter((m) => m.length === 1);
       if (singles.length > 0) {
         return singles.reduce((best, m) => (m[0].value > best[0].value ? m : best));

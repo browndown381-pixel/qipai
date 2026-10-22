@@ -6,6 +6,7 @@ import {
   Minimize2,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react';
 import { ViewportMetrics } from '../../App';
 import { soundEngine } from '../../shared/audio/SoundEngine';
@@ -17,10 +18,14 @@ import {
   NiuniuHandResult,
   NiuniuPhase,
   NiuniuPlayerInfo,
+  NiuniuPlayMode,
   NiuniuTableSnapshot,
 } from './types';
 import {
+  compareHands,
   createStandardNiuniuDeck,
+  evaluateBetMultiplier,
+  evaluateCallBankerExpected,
   evaluateNiuniuHand,
   shuffleDeck,
   solveOptimalPartition,
@@ -36,8 +41,25 @@ export interface NiuniuTableViewProps {
   onLeaveRoom: () => void;
 }
 
+const MODE_LABELS: Record<NiuniuPlayMode, string> = {
+  qiangzhuang: '看牌抢庄',
+  tongbi: '通比牛牛',
+  crazy: '疯狂加倍',
+};
+
+const PHASE_BANNERS: Record<NiuniuPhase, string> = {
+  WAITING: '等待开局',
+  DEAL_FIRST_4: '发牌中',
+  CALL_BANKER: '请抢庄',
+  DETERMINE_BANKER: '定庄中',
+  BETTING: '请闲家下注',
+  DEAL_5TH: '发第5张牌',
+  SHOWDOWN: '请亮牌',
+  COMPARE_AND_SETTLE: '比牌结算',
+  ROUND_RESULT: '本局结束',
+};
+
 export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
-  viewport,
   isFullscreen,
   onToggleFullscreen,
   onLeaveRoom,
@@ -47,8 +69,9 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
   const [showRuleModal, setShowRuleModal] = useState<boolean>(false);
   const [selectedCardIds, setSelectedCardIds] = useState<number[]>([]);
 
-  // Simulation local state fallback if socket snapshot is delayed
+  // Local simulation state if socket server snapshot is not active
   const [localSnapshot, setLocalSnapshot] = useState<NiuniuTableSnapshot | null>(null);
+  const fullLocalHandsRef = useRef<NiuniuCard[][]>([]);
 
   // Initialize socket listener
   useEffect(() => {
@@ -65,110 +88,163 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
     };
   }, []);
 
+  // Auto-ready if server snapshot arrives in WAITING with self unready
+  useEffect(() => {
+    if (!snapshot || snapshot.phase !== 'WAITING') return;
+    const self = snapshot.seats.find((s) => s && !s.isBot);
+    if (self && !self.ready) {
+      socketClient.emit('c2s_niuniu_ready');
+    }
+  }, [snapshot]);
+
+  // Helper to start a local simulated round (fallback when offline)
+  const startLocalSimulatedRound = useCallback((existingBeans?: number[]) => {
+    const deck = shuffleDeck(createStandardNiuniuDeck());
+    const hands: NiuniuCard[][] = [
+      deck.slice(0, 5),
+      deck.slice(5, 10),
+      deck.slice(10, 15),
+      deck.slice(15, 20),
+      deck.slice(20, 25),
+    ];
+    fullLocalHandsRef.current = hands;
+
+    const botCalls = [
+      -1,
+      evaluateCallBankerExpected(hands[1].slice(0, 4), 'qiangzhuang'),
+      evaluateCallBankerExpected(hands[2].slice(0, 4), 'qiangzhuang'),
+      evaluateCallBankerExpected(hands[3].slice(0, 4), 'qiangzhuang'),
+      evaluateCallBankerExpected(hands[4].slice(0, 4), 'qiangzhuang'),
+    ];
+
+    const maskHand = (cards: NiuniuCard[], isSelf: boolean, idx: number): NiuniuCard[] => {
+      if (isSelf) {
+        return cards.map((c, i) =>
+          i < 4 ? c : { id: -105, suit: 'spade', rank: 0, value: 0 }
+        );
+      }
+      return cards.map((_, i) => ({
+        id: -100 - idx * 10 - i,
+        suit: 'spade',
+        rank: 0,
+        value: 0,
+      }));
+    };
+
+    const mockSeats: NiuniuPlayerInfo[] = [
+      {
+        playerId: 'self_player',
+        nickname: '长安棋圣',
+        avatarId: 'kashen',
+        seatIndex: 0,
+        beans: existingBeans?.[0] ?? 128000,
+        ready: true,
+        isBot: false,
+        disconnected: false,
+        callMultiplier: -1,
+        betMultiplier: 0,
+        isDealer: false,
+        cards: maskHand(hands[0], true, 0),
+        hasShownHand: false,
+      },
+      {
+        playerId: 'bot_1',
+        nickname: '锦鲤·贝儿',
+        avatarId: 'beier',
+        seatIndex: 1,
+        beans: existingBeans?.[1] ?? 95000,
+        ready: true,
+        isBot: true,
+        disconnected: false,
+        callMultiplier: botCalls[1],
+        betMultiplier: 0,
+        isDealer: false,
+        cards: maskHand(hands[1], false, 1),
+        hasShownHand: false,
+      },
+      {
+        playerId: 'bot_2',
+        nickname: '折扇·柳如风',
+        avatarId: 'scholar',
+        seatIndex: 2,
+        beans: existingBeans?.[2] ?? 180000,
+        ready: true,
+        isBot: true,
+        disconnected: false,
+        callMultiplier: botCalls[2],
+        betMultiplier: 0,
+        isDealer: false,
+        cards: maskHand(hands[2], false, 2),
+        hasShownHand: false,
+      },
+      {
+        playerId: 'bot_3',
+        nickname: '财神·金百万',
+        avatarId: 'noble',
+        seatIndex: 3,
+        beans: existingBeans?.[3] ?? 240000,
+        ready: true,
+        isBot: true,
+        disconnected: false,
+        callMultiplier: botCalls[3],
+        betMultiplier: 0,
+        isDealer: false,
+        cards: maskHand(hands[3], false, 3),
+        hasShownHand: false,
+      },
+      {
+        playerId: 'bot_4',
+        nickname: '凌霄剑仙',
+        avatarId: 'warrior',
+        seatIndex: 4,
+        beans: existingBeans?.[4] ?? 88000,
+        ready: true,
+        isBot: true,
+        disconnected: false,
+        callMultiplier: botCalls[4],
+        betMultiplier: 0,
+        isDealer: false,
+        cards: maskHand(hands[4], false, 4),
+        hasShownHand: false,
+      },
+    ];
+
+    setLocalSnapshot({
+      roomId: '888666',
+      baseScore: 100,
+      playMode: 'qiangzhuang',
+      phase: 'CALL_BANKER',
+      countdown: 6,
+      dealerSeatId: 3,
+      seats: mockSeats,
+      candidateDealerSeats: [],
+    });
+  }, []);
+
   // Offline local simulation fallback initialization
   useEffect(() => {
     const timer = setTimeout(() => {
       if (!snapshot) {
-        // Create initial local mock 5-player game if server snapshot hasn't arrived
-        const deck = shuffleDeck(createStandardNiuniuDeck());
-        const mockSeats: NiuniuPlayerInfo[] = [
-          {
-            playerId: 'self_player',
-            nickname: '我 (牌圣)',
-            avatarId: 'kashen',
-            seatIndex: 0,
-            beans: 128000,
-            ready: true,
-            isBot: false,
-            disconnected: false,
-            callMultiplier: -1,
-            betMultiplier: 0,
-            isDealer: false,
-            cards: deck.slice(0, 5),
-            hasShownHand: false,
-          },
-          {
-            playerId: 'bot_1',
-            nickname: '锦鲤·贝儿AI',
-            avatarId: 'beier',
-            seatIndex: 1,
-            beans: 95000,
-            ready: true,
-            isBot: true,
-            disconnected: false,
-            callMultiplier: 2,
-            betMultiplier: 0,
-            isDealer: false,
-            cards: deck.slice(5, 10),
-            hasShownHand: false,
-          },
-          {
-            playerId: 'bot_2',
-            nickname: '折扇·柳如风AI',
-            avatarId: 'scholar',
-            seatIndex: 2,
-            beans: 180000,
-            ready: true,
-            isBot: true,
-            disconnected: false,
-            callMultiplier: 0,
-            betMultiplier: 0,
-            isDealer: false,
-            cards: deck.slice(10, 15),
-            hasShownHand: false,
-          },
-          {
-            playerId: 'bot_3',
-            nickname: '财神·金百万AI',
-            avatarId: 'noble',
-            seatIndex: 3,
-            beans: 240000,
-            ready: true,
-            isBot: true,
-            disconnected: false,
-            callMultiplier: 3,
-            betMultiplier: 0,
-            isDealer: false,
-            cards: deck.slice(15, 20),
-            hasShownHand: false,
-          },
-          {
-            playerId: 'bot_4',
-            nickname: '凌霄剑仙AI',
-            avatarId: 'warrior',
-            seatIndex: 4,
-            beans: 88000,
-            ready: true,
-            isBot: true,
-            disconnected: false,
-            callMultiplier: 1,
-            betMultiplier: 0,
-            isDealer: false,
-            cards: deck.slice(20, 25),
-            hasShownHand: false,
-          },
-        ];
-
-        setLocalSnapshot({
-          roomId: '888666',
-          baseScore: 100,
-          playMode: 'qiangzhuang',
-          phase: 'CALL_BANKER',
-          countdown: 5,
-          dealerSeatId: 3,
-          seats: mockSeats,
-          candidateDealerSeats: [1, 3],
-        });
+        startLocalSimulatedRound();
       }
-    }, 1500);
+    }, 1200);
 
     return () => clearTimeout(timer);
-  }, [snapshot]);
+  }, [snapshot, startLocalSimulatedRound]);
 
-  // Use server snapshot if available, otherwise local simulation snapshot
   const activeSnapshot = snapshot || localSnapshot;
 
-  // Identify self player (usually seat 0 or matching socket playerId)
+  // Clear selected cards whenever a new round begins
+  useEffect(() => {
+    if (
+      activeSnapshot?.phase === 'DEAL_FIRST_4' ||
+      activeSnapshot?.phase === 'CALL_BANKER' ||
+      activeSnapshot?.phase === 'WAITING'
+    ) {
+      setSelectedCardIds([]);
+    }
+  }, [activeSnapshot?.phase]);
+
   const selfPlayer = useMemo(() => {
     if (!activeSnapshot) return null;
     return (
@@ -178,121 +254,242 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
     );
   }, [activeSnapshot]);
 
-  // Pre-evaluate self hand
   const selfHandResult = useMemo<NiuniuHandResult | undefined>(() => {
-    if (!selfPlayer || !selfPlayer.cards || selfPlayer.cards.length !== 5) return undefined;
-    return evaluateNiuniuHand(selfPlayer.cards);
-  }, [selfPlayer]);
+    if (!selfPlayer || !selfPlayer.cards) return undefined;
+    if (selfPlayer.handResult) return selfPlayer.handResult;
+    const validCards = selfPlayer.cards.filter((c) => c.rank > 0);
+    if (validCards.length !== 5) return undefined;
+    return evaluateNiuniuHand(validCards, activeSnapshot?.playMode || 'qiangzhuang');
+  }, [selfPlayer, activeSnapshot?.playMode]);
 
   // Client actions
-  const handleCallBanker = useCallback((multiplier: number) => {
-    soundEngine.playNiuniuCall();
-    hapticEngine.tap();
-    socketClient.emit('c2s_niuniu_call_banker', { callMultiplier: multiplier });
-    if (localSnapshot && selfPlayer) {
-      setLocalSnapshot((prev) => {
-        if (!prev) return null;
-        const newSeats = [...prev.seats];
-        newSeats[selfPlayer.seatIndex] = {
-          ...newSeats[selfPlayer.seatIndex]!,
-          callMultiplier: multiplier,
-        };
-        return {
-          ...prev,
-          phase: 'BETTING',
-          countdown: 5,
-          dealerSeatId: multiplier >= 3 ? selfPlayer.seatIndex : 3,
-          seats: newSeats,
-        };
-      });
-    }
-  }, [localSnapshot, selfPlayer]);
+  const handleCallBanker = useCallback(
+    (multiplier: number) => {
+      soundEngine.playNiuniuCall();
+      hapticEngine.tap();
+      socketClient.emit('c2s_niuniu_call_banker', { callMultiplier: multiplier });
 
-  const handleBet = useCallback((multiplier: number) => {
-    soundEngine.playNiuniuChip();
-    hapticEngine.playCard();
-    socketClient.emit('c2s_niuniu_bet', { betMultiplier: multiplier });
-    if (localSnapshot && selfPlayer) {
-      setLocalSnapshot((prev) => {
-        if (!prev) return null;
-        const newSeats = [...prev.seats];
-        newSeats[selfPlayer.seatIndex] = {
-          ...newSeats[selfPlayer.seatIndex]!,
-          betMultiplier: multiplier,
-        };
-        return {
-          ...prev,
-          phase: 'SHOWDOWN',
-          countdown: 8,
-          seats: newSeats,
-        };
-      });
-    }
-  }, [localSnapshot, selfPlayer]);
+      if (!snapshot && localSnapshot && selfPlayer) {
+        setLocalSnapshot((prev) => {
+          if (!prev) return null;
+          const newSeats = prev.seats.map((s) => (s ? { ...s } : null));
+          newSeats[selfPlayer.seatIndex]!.callMultiplier = multiplier;
+
+          let maxCall = 0;
+          newSeats.forEach((s) => {
+            if (s && s.callMultiplier > maxCall) maxCall = s.callMultiplier;
+          });
+          const candidates = newSeats
+            .filter((s) => s && s.callMultiplier === maxCall)
+            .map((s) => s!.seatIndex);
+          const chosenDealer =
+            candidates[Math.floor(Math.random() * candidates.length)] ?? 0;
+
+          newSeats.forEach((s, idx) => {
+            if (!s) return;
+            s.isDealer = idx === chosenDealer;
+            if (idx === chosenDealer && s.callMultiplier <= 0) {
+              s.callMultiplier = 1;
+            }
+            if (s.isBot && idx !== chosenDealer) {
+              s.betMultiplier = evaluateBetMultiplier(
+                fullLocalHandsRef.current[idx]?.slice(0, 4) || [],
+                prev.playMode,
+                Math.max(1, newSeats[chosenDealer]?.callMultiplier || 1)
+              );
+            }
+          });
+
+          // If self became dealer, reveal 5th card and jump to SHOWDOWN
+          if (chosenDealer === selfPlayer.seatIndex) {
+            newSeats[0]!.cards = fullLocalHandsRef.current[0] || newSeats[0]!.cards;
+            newSeats[0]!.handResult = evaluateNiuniuHand(
+              newSeats[0]!.cards,
+              prev.playMode
+            );
+            return {
+              ...prev,
+              phase: 'SHOWDOWN',
+              countdown: 8,
+              dealerSeatId: chosenDealer,
+              seats: newSeats,
+            };
+          }
+
+          return {
+            ...prev,
+            phase: 'BETTING',
+            countdown: 6,
+            dealerSeatId: chosenDealer,
+            seats: newSeats,
+          };
+        });
+      }
+    },
+    [snapshot, localSnapshot, selfPlayer]
+  );
+
+  const handleBet = useCallback(
+    (multiplier: number) => {
+      soundEngine.playNiuniuChip();
+      hapticEngine.playCard();
+      socketClient.emit('c2s_niuniu_bet', { betMultiplier: multiplier });
+
+      if (!snapshot && localSnapshot && selfPlayer) {
+        setLocalSnapshot((prev) => {
+          if (!prev) return null;
+          const newSeats = prev.seats.map((s) => (s ? { ...s } : null));
+          newSeats[selfPlayer.seatIndex]!.betMultiplier = multiplier;
+          // Reveal 5th card for self player in SHOWDOWN
+          if (fullLocalHandsRef.current[0]) {
+            newSeats[0]!.cards = fullLocalHandsRef.current[0];
+            newSeats[0]!.handResult = evaluateNiuniuHand(
+              fullLocalHandsRef.current[0],
+              prev.playMode
+            );
+          }
+          return {
+            ...prev,
+            phase: 'SHOWDOWN',
+            countdown: 8,
+            seats: newSeats,
+          };
+        });
+      }
+    },
+    [snapshot, localSnapshot, selfPlayer]
+  );
 
   const handleAutoPartition = useCallback(() => {
-    if (!selfPlayer || !selfPlayer.cards || selfPlayer.cards.length !== 5) return;
+    if (!selfPlayer || !selfPlayer.cards) return;
+    const valid = selfPlayer.cards.filter((c) => c.rank > 0);
+    if (valid.length !== 5) return;
     soundEngine.playTap(640);
     hapticEngine.selectCard();
-    const partition = solveOptimalPartition(selfPlayer.cards);
-    if (partition.hasNiu) {
-      setSelectedCardIds(partition.bullGroup.map((c) => c.id));
+    const partition = solveOptimalPartition(
+      valid,
+      activeSnapshot?.playMode || 'qiangzhuang'
+    );
+    if (partition.hasNiu && partition.tenGroup.length === 3) {
+      setSelectedCardIds(partition.tenGroup.map((c) => c.id));
     } else {
       setSelectedCardIds([]);
     }
-  }, [selfPlayer]);
+  }, [selfPlayer, activeSnapshot?.playMode]);
 
   const handleShowHand = useCallback(() => {
     soundEngine.playNiuniuHandReveal(selfHandResult?.level ?? 0);
     hapticEngine.playCard();
     socketClient.emit('c2s_niuniu_show_hand');
-    if (localSnapshot && selfPlayer && selfHandResult) {
+
+    if (!snapshot && localSnapshot && selfPlayer) {
       setLocalSnapshot((prev) => {
         if (!prev) return null;
-        const newSeats = [...prev.seats];
-        newSeats[selfPlayer.seatIndex] = {
-          ...newSeats[selfPlayer.seatIndex]!,
-          hasShownHand: true,
-          handResult: selfHandResult,
-        };
+        const dealerIdx = prev.dealerSeatId;
+        const fullHands = fullLocalHandsRef.current;
+        const results = prev.seats.map((s, idx) =>
+          s && fullHands[idx]
+            ? evaluateNiuniuHand(fullHands[idx], prev.playMode)
+            : undefined
+        );
+        const dealerRes = results[dealerIdx]!;
+        const dealerCall = Math.max(
+          1,
+          prev.seats[dealerIdx]?.callMultiplier || 1
+        );
+
+        const deltas = [0, 0, 0, 0, 0];
+        let dealerTotal = 0;
+
+        prev.seats.forEach((s, idx) => {
+          if (!s || idx === dealerIdx || !results[idx]) return;
+          const bet = s.betMultiplier || 5;
+          const cmp = compareHands(results[idx]!, dealerRes);
+          if (cmp > 0) {
+            const win = prev.baseScore * dealerCall * bet * results[idx]!.multiplier;
+            deltas[idx] = win;
+            dealerTotal -= win;
+          } else {
+            const loss = prev.baseScore * dealerCall * bet * dealerRes.multiplier;
+            deltas[idx] = -loss;
+            dealerTotal += loss;
+          }
+        });
+        deltas[dealerIdx] = dealerTotal;
+
+        const newSeats = prev.seats.map((s, idx) => {
+          if (!s) return null;
+          return {
+            ...s,
+            beans: Math.max(0, s.beans + deltas[idx]),
+            cards: fullHands[idx] || s.cards,
+            hasShownHand: true,
+            handResult: results[idx],
+            scoreDelta: deltas[idx],
+          };
+        });
+
         return {
           ...prev,
-          phase: 'COMPARE_AND_SETTLE',
+          phase: 'ROUND_RESULT',
+          countdown: 6,
           seats: newSeats,
+          settlement: {
+            baseScore: prev.baseScore,
+            playMode: prev.playMode,
+            dealerSeatIndex: dealerIdx,
+            players: newSeats
+              .filter(Boolean)
+              .map((s) => ({
+                seatIndex: s!.seatIndex,
+                playerId: s!.playerId,
+                nickname: s!.nickname,
+                avatarId: s!.avatarId,
+                isDealer: s!.seatIndex === dealerIdx,
+                callMultiplier: s!.callMultiplier,
+                betMultiplier: s!.betMultiplier,
+                handType: s!.handResult!.handType,
+                handName: s!.handResult!.name,
+                handMultiplier: s!.handResult!.multiplier,
+                cards: s!.cards,
+                scoreDelta: s!.scoreDelta || 0,
+                balance: s!.beans,
+                isWinner: (s!.scoreDelta || 0) > 0,
+              })),
+          },
         };
       });
     }
-  }, [localSnapshot, selfPlayer, selfHandResult]);
+  }, [snapshot, localSnapshot, selfPlayer, selfHandResult]);
 
   const handleReady = useCallback(() => {
     soundEngine.playTap(720);
     hapticEngine.tap();
     socketClient.emit('c2s_niuniu_ready');
-    if (localSnapshot && selfPlayer) {
-      setLocalSnapshot((prev) => {
-        if (!prev) return null;
-        const newSeats = [...prev.seats];
-        newSeats[selfPlayer.seatIndex] = {
-          ...newSeats[selfPlayer.seatIndex]!,
-          ready: true,
-        };
-        return {
-          ...prev,
-          phase: 'WAITING',
-          seats: newSeats,
-        };
-      });
+
+    if (!snapshot && localSnapshot) {
+      const currentBeans = localSnapshot.seats.map((s) => s?.beans ?? 100000);
+      startLocalSimulatedRound(currentBeans);
     }
-  }, [localSnapshot, selfPlayer]);
+  }, [snapshot, localSnapshot, startLocalSimulatedRound]);
 
   const handleCardClick = (card: NiuniuCard) => {
-    setSelectedCardIds((prev) =>
-      prev.includes(card.id) ? prev.filter((id) => id !== card.id) : [...prev, card.id]
-    );
+    if (card.rank <= 0) return;
+    soundEngine.playTap(660);
+    setSelectedCardIds((prev) => {
+      if (prev.includes(card.id)) {
+        return prev.filter((id) => id !== card.id);
+      }
+      if (prev.length >= 3) {
+        return [...prev.slice(1), card.id];
+      }
+      return [...prev, card.id];
+    });
   };
 
   const seats = activeSnapshot?.seats ?? [null, null, null, null, null];
   const phase = activeSnapshot?.phase ?? 'WAITING';
+  const playMode: NiuniuPlayMode = activeSnapshot?.playMode ?? 'qiangzhuang';
   const countdown = activeSnapshot?.countdown ?? 0;
   const candidateSeats = activeSnapshot?.candidateDealerSeats ?? [];
 
@@ -300,10 +497,10 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
     <AutoLandscapeContainer baseHeight={720} minVirtualWidth={1280} maxVirtualWidth={1600}>
       {({ virtualWidth, virtualHeight, stageScale }) => (
         <div className="relative h-full w-full select-none overflow-hidden bg-[#071911]">
-          {/* Background Ambient Dark Layer */}
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(0,0,0,0.1)_0%,rgba(0,0,0,0.7)_95%)]" />
+          {/* Background Ambient Dark Vignette */}
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_50%,rgba(0,0,0,0.08)_0%,rgba(0,0,0,0.72)_95%)]" />
 
-          {/* Virtual Stage Container: 720p height, dynamic virtualWidth, centered and scaled */}
+          {/* Virtual Stage Container: 720p height, dynamic virtualWidth */}
           <div
             className="absolute overflow-hidden"
             style={{
@@ -315,46 +512,60 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
               transformOrigin: 'center center',
             }}
           >
-            {/* ================= Semi-Elliptical Table Velvet Felt ================= */}
+            {/* ================= Luxury Bullfight Table Felt ================= */}
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div
-                className="relative rounded-[160px] border-[6px] border-[#cda761] bg-radial from-[#185e3a] via-[#0d4026] to-[#062415] shadow-[inset_0_0_80px_rgba(0,0,0,0.8),0_0_50px_rgba(0,0,0,0.9)]"
+                className="relative rounded-[175px] border-[7px] border-[#cda761] bg-radial from-[#19633e] via-[#0e4228] to-[#062415] shadow-[inset_0_0_80px_rgba(0,0,0,0.82),0_0_50px_rgba(0,0,0,0.9)]"
                 style={{
-                  width: `${virtualWidth - 80}px`,
-                  height: '630px',
+                  width: `${virtualWidth - 84}px`,
+                  height: '626px',
                 }}
-              />
-              {/* Center Decorative Golden Pattern */}
-              <div className="pointer-events-none absolute flex flex-col items-center justify-center opacity-25">
-                <span className="font-display text-5xl font-black tracking-widest text-[#d8b872]">
-                  抢庄牛牛
+              >
+                {/* Inner Gold Hairline Ring */}
+                <div className="pointer-events-none absolute inset-4 rounded-[155px] border border-[#d8b872]/25" />
+              </div>
+
+              {/* Center Table Watermark & Compact Phase Pill */}
+              <div className="pointer-events-none absolute flex flex-col items-center justify-center gap-2">
+                <span className="font-display text-5xl font-black tracking-widest text-[#d8b872]/10">
+                  {MODE_LABELS[playMode]}
                 </span>
-                <span className="text-xs font-serif tracking-widest text-amber-200">
-                  CLASSIC BULLFIGHT POKER
-                </span>
+
+                <div className="flex items-center gap-2 rounded-full border border-amber-300/30 bg-black/50 px-4 py-1 text-xs font-extrabold text-amber-100 shadow-lg backdrop-blur-xs">
+                  <span>{PHASE_BANNERS[phase]}</span>
+                  {countdown > 0 && phase !== 'WAITING' && (
+                    <span className="rounded-full bg-amber-400 px-2 py-0.2 font-mono text-xs font-black text-[#240e03]">
+                      {countdown}s
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* ================= Top Navigation Header ================= */}
-            <header className="absolute top-3 left-6 right-6 z-30 flex items-center justify-between">
-              {/* Left: Exit & Table Info */}
-              <div className="flex items-center gap-3">
+            <header className="absolute top-3 right-6 left-6 z-30 flex items-center justify-between">
+              {/* Left: Exit & Clean Mode Capsule */}
+              <div className="flex items-center gap-2.5">
                 <button
                   type="button"
-                  onClick={onLeaveRoom}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
+                  onClick={() => {
+                    socketClient.emit('c2s_leave_room');
+                    onLeaveRoom();
+                  }}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:border-amber-300 hover:bg-black/80"
                   title="返回大厅"
                 >
-                  <ArrowLeft className="h-5 w-5" />
+                  <ArrowLeft className="h-4.5 w-4.5" />
                 </button>
 
-                <div className="flex items-center gap-2 rounded-full border border-amber-400/30 bg-black/60 px-3.5 py-1 backdrop-blur-xs text-xs font-bold text-amber-200">
-                  <span className="rounded-xs bg-red-700 px-1 py-0.2 text-[10px] font-black text-amber-100">斗牛</span>
-                  <span>抢庄牛牛</span>
-                  <span className="text-white/30">|</span>
-                  <span className="font-mono text-white/80">房号: {activeSnapshot?.roomId || '------'}</span>
-                  <span className="text-white/30">|</span>
-                  <span className="font-mono text-amber-300">底分: {activeSnapshot?.baseScore || 100}</span>
+                <div className="flex items-center gap-2 rounded-full border border-amber-300/30 bg-black/60 px-3.5 py-1.5 text-xs font-bold text-amber-100 backdrop-blur-xs">
+                  <span className="text-amber-300">
+                    {MODE_LABELS[playMode]}
+                  </span>
+                  <span className="text-white/30">·</span>
+                  <span className="font-mono text-amber-200">
+                    底分 {activeSnapshot?.baseScore || 100}
+                  </span>
                 </div>
               </div>
 
@@ -367,22 +578,22 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
                     setSoundEnabled(next);
                   }}
                   title={soundEnabled ? '静音' : '开启声音'}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
                 >
                   {soundEnabled ? (
-                    <Volume2 className="h-5 w-5 text-amber-300" />
+                    <Volume2 className="h-4 w-4 text-amber-300" />
                   ) : (
-                    <VolumeX className="h-5 w-5 text-neutral-400" />
+                    <VolumeX className="h-4 w-4 text-rose-400" />
                   )}
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setShowRuleModal(true)}
-                  title="规则说明"
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
+                  title="牌型倍率说明"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-amber-200 shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
                 >
-                  <HelpCircle className="h-5 w-5 text-amber-200" />
+                  <HelpCircle className="h-4 w-4" />
                 </button>
 
                 {onToggleFullscreen && (
@@ -390,12 +601,12 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
                     type="button"
                     onClick={onToggleFullscreen}
                     title={isFullscreen ? '退出全屏' : '全屏'}
-                    className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
+                    className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-white shadow-md active:scale-95 cursor-pointer hover:bg-black/80"
                   >
                     {isFullscreen ? (
-                      <Minimize2 className="h-5 w-5 text-white" />
+                      <Minimize2 className="h-4 w-4 text-amber-300" />
                     ) : (
-                      <Maximize2 className="h-5 w-5 text-white" />
+                      <Maximize2 className="h-4 w-4 text-white" />
                     )}
                   </button>
                 )}
@@ -404,75 +615,89 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
 
             {/* ================= 5-Player Table Arena Ring ================= */}
             <main className="relative z-20 h-full w-full">
-              {/* Top Center: Seat 2 and Seat 3 */}
+              {/* Top Left-Center: Seat 2 */}
               <div
-                className="absolute top-[65px]"
-                style={{ left: `${virtualWidth * 0.32}px`, transform: 'translateX(-50%)' }}
+                className="absolute top-[64px]"
+                style={{ left: `${virtualWidth * 0.31}px`, transform: 'translateX(-50%)' }}
               >
                 <NiuniuPlayerSeat
                   player={seats[2]}
                   seatIndex={2}
                   isSelf={false}
                   phase={phase}
-                  isDealerCandidate={phase === 'DETERMINE_BANKER' && candidateSeats.includes(2)}
+                  isDealerCandidate={
+                    phase === 'DETERMINE_BANKER' && candidateSeats.includes(2)
+                  }
                 />
               </div>
 
+              {/* Top Right-Center: Seat 3 */}
               <div
-                className="absolute top-[65px]"
-                style={{ left: `${virtualWidth * 0.68}px`, transform: 'translateX(-50%)' }}
+                className="absolute top-[64px]"
+                style={{ left: `${virtualWidth * 0.69}px`, transform: 'translateX(-50%)' }}
               >
                 <NiuniuPlayerSeat
                   player={seats[3]}
                   seatIndex={3}
                   isSelf={false}
                   phase={phase}
-                  isDealerCandidate={phase === 'DETERMINE_BANKER' && candidateSeats.includes(3)}
+                  isDealerCandidate={
+                    phase === 'DETERMINE_BANKER' && candidateSeats.includes(3)
+                  }
                 />
               </div>
 
               {/* Left Side: Seat 1 */}
-              <div className="absolute top-[300px] left-[70px] -translate-y-1/2">
+              <div className="absolute top-[305px] left-[66px] -translate-y-1/2">
                 <NiuniuPlayerSeat
                   player={seats[1]}
                   seatIndex={1}
                   isSelf={false}
                   phase={phase}
-                  isDealerCandidate={phase === 'DETERMINE_BANKER' && candidateSeats.includes(1)}
+                  isDealerCandidate={
+                    phase === 'DETERMINE_BANKER' && candidateSeats.includes(1)
+                  }
                 />
               </div>
 
               {/* Right Side: Seat 4 */}
-              <div className="absolute top-[300px] right-[70px] -translate-y-1/2">
+              <div className="absolute top-[305px] right-[66px] -translate-y-1/2">
                 <NiuniuPlayerSeat
                   player={seats[4]}
                   seatIndex={4}
                   isSelf={false}
                   phase={phase}
-                  isDealerCandidate={phase === 'DETERMINE_BANKER' && candidateSeats.includes(4)}
+                  isDealerCandidate={
+                    phase === 'DETERMINE_BANKER' && candidateSeats.includes(4)
+                  }
                 />
               </div>
 
               {/* Bottom Center: Seat 0 (Main Player) */}
-              <div className="absolute bottom-[108px] left-1/2 -translate-x-1/2">
+              <div className="absolute bottom-[114px] left-1/2 -translate-x-1/2">
                 <NiuniuPlayerSeat
-                  player={seats[0]}
-                  seatIndex={0}
+                  player={selfPlayer}
+                  seatIndex={selfPlayer?.seatIndex ?? 0}
                   isSelf={true}
                   phase={phase}
                   onCardClick={handleCardClick}
                   selectedCardIds={selectedCardIds}
-                  isDealerCandidate={phase === 'DETERMINE_BANKER' && candidateSeats.includes(0)}
+                  isDealerCandidate={
+                    phase === 'DETERMINE_BANKER' &&
+                    candidateSeats.includes(selfPlayer?.seatIndex ?? 0)
+                  }
                 />
               </div>
             </main>
 
             {/* ================= Action Bar Dock ================= */}
-            <footer className="absolute bottom-[16px] left-1/2 -translate-x-1/2 z-30 w-full max-w-2xl px-4 flex justify-center pointer-events-auto">
+            <footer className="pointer-events-auto absolute bottom-[14px] left-1/2 z-30 flex w-full max-w-3xl -translate-x-1/2 justify-center px-4">
               <NiuniuActionBar
                 phase={phase}
+                playMode={playMode}
                 countdown={countdown}
                 selfPlayer={selfPlayer}
+                selectedCardIds={selectedCardIds}
                 onCallBanker={handleCallBanker}
                 onBet={handleBet}
                 onAutoPartition={handleAutoPartition}
@@ -490,38 +715,58 @@ export const NiuniuTableView: React.FC<NiuniuTableViewProps> = ({
                 countdown={countdown}
                 selfPlayerId={selfPlayer?.playerId || ''}
                 onReadyNext={handleReady}
-                onLeaveRoom={onLeaveRoom}
+                onLeaveRoom={() => {
+                  socketClient.emit('c2s_leave_room');
+                  onLeaveRoom();
+                }}
               />
             )}
 
             {/* ================= Rule Explanation Modal ================= */}
             {showRuleModal && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs pointer-events-auto">
-                <div className="relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border-2 border-amber-400 bg-[#16120e] p-4 text-white shadow-2xl">
-                  <h3 className="text-center font-display text-lg font-black text-amber-300">
-                    抢庄牛牛 · 规则说明
-                  </h3>
-                  <div className="mt-3 flex-1 overflow-y-auto space-y-2 text-xs sm:text-sm text-neutral-300 pr-1">
+              <div
+                className="pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs"
+                onClick={() => setShowRuleModal(false)}
+              >
+                <div
+                  className="relative flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-3xl border-2 border-amber-300/70 bg-gradient-to-b from-[#26160c] via-[#190e07] to-[#110904] p-5 text-white shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                    <h3 className="font-display text-lg font-black text-amber-300">
+                      抢庄牛牛 · 规则与牌型倍率
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setShowRuleModal(false)}
+                      className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-amber-200 hover:bg-white/20 cursor-pointer"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  <div className="mt-3 flex-1 space-y-2.5 overflow-y-auto pr-1 text-xs sm:text-sm text-amber-100/90">
                     <p>
-                      <strong className="text-amber-200">1. 发牌规则：</strong>每位玩家发 5 张牌，由 52 张标准扑克组成（无大小王）。
+                      <strong className="text-amber-300">1. 看牌抢庄（4明1暗）：</strong>
+                      开局先发 4 张明牌与 1 张暗牌，玩家根据前 4 张牌选择抢庄倍数（不抢/1~4倍）；定庄后闲家选注（5/10/15/20倍），随后揭晓第 5 张牌算牛比大小。
                     </p>
                     <p>
-                      <strong className="text-amber-200">2. 牌型大小：</strong>五小牛 (10倍) &gt; 炸弹牛 (8倍) &gt; 五花牛 (6倍) &gt; 四花牛 (5倍) &gt; 牛牛 (4倍) &gt; 牛九 (3倍) &gt; 牛八~牛七 (2倍) &gt; 牛六~牛一 (1倍) &gt; 无牛 (1倍)。
+                      <strong className="text-amber-300">2. 结算公式：</strong>
+                      输赢豆数 = 房间底分 × 庄家抢庄倍数 × 闲家下注倍数 × 胜方牌型倍数（支持以小博大与庄家赔付封顶保护）。
                     </p>
                     <p>
-                      <strong className="text-amber-200">3. 算牛规则：</strong>任意 3 张牌点数和为 10 的倍数即为「有牛」，其余 2 张牌点数相加对 10 取模得到牛数。
+                      <strong className="text-amber-300">3. 经典牌型倍率：</strong>
+                      五小牛(10倍) &gt; 炸弹牛(8倍) &gt; 五花牛(6倍) &gt; 四花/葫芦/同花/顺子牛(5倍) &gt; 牛牛(4倍) &gt; 牛九(3倍) &gt; 牛八/牛七(2倍) &gt; 牛六~无牛(1倍)。
                     </p>
                     <p>
-                      <strong className="text-amber-200">4. 比牌规则：</strong>牌型相同时比较单张最大牌（K &gt; Q &gt; ... &gt; A），最大牌相同时比较花色（黑桃 &gt; 红桃 &gt; 梅花 &gt; 方块），绝无平局。
+                      <strong className="text-amber-300">4. 疯狂加倍倍率：</strong>
+                      五小牛(10倍) &gt; 炸弹牛(9倍) &gt; 五花牛(8倍) &gt; 四花/葫芦/同花/顺子牛(7倍) &gt; 牛牛(6倍) &gt; 牛九(5倍) &gt; 牛八(4倍) &gt; 牛七(3倍) &gt; 牛六/牛五(2倍) &gt; 牛四~无牛(1倍)。
+                    </p>
+                    <p>
+                      <strong className="text-amber-300">5. 同牌型比大小：</strong>
+                      牌型相同时比单张最大牌点数（K &gt; Q &gt; ... &gt; A），点数相同比花色（黑桃 &gt; 红桃 &gt; 梅花 &gt; 方块），严格全序无平局。
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowRuleModal(false)}
-                    className="mt-4 rounded-full border border-amber-300 bg-amber-500 py-2 text-xs font-black text-black active:scale-95 cursor-pointer"
-                  >
-                    我知道了
-                  </button>
                 </div>
               </div>
             )}

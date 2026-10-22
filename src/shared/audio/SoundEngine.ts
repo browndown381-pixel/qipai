@@ -17,6 +17,8 @@ class SoundEngine {
   private bufferCache: Map<string, AudioBuffer> = new Map();
   private pendingFetches: Map<string, Promise<AudioBuffer | null>> = new Map();
   private isUnlocked: boolean = false;
+  private activeVoiceSource: AudioBufferSourceNode | null = null;
+  private activeVoiceAudio: HTMLAudioElement | null = null;
 
   constructor() {
     const savedSfx = localStorage.getItem('h5_audio_enabled');
@@ -540,73 +542,211 @@ class SoundEngine {
     });
   }
 
-  /** Play Dou Dizhu audio with WebAudio buffer caching */
+  private queuedVoiceFile: { fileName: string; volumeScale: number } | null = null;
+
+  /** Stop any currently playing voice line so consecutive turn announcements never overlap */
+  private stopActiveVoice(clearQueue = true): void {
+    if (clearQueue) {
+      this.queuedVoiceFile = null;
+    }
+    if (this.activeVoiceSource) {
+      try {
+        this.activeVoiceSource.onended = null;
+        this.activeVoiceSource.stop();
+        this.activeVoiceSource.disconnect();
+      } catch {
+        // Ignored
+      }
+      this.activeVoiceSource = null;
+    }
+    if (this.activeVoiceAudio) {
+      try {
+        this.activeVoiceAudio.onended = null;
+        this.activeVoiceAudio.pause();
+        this.activeVoiceAudio.currentTime = 0;
+      } catch {
+        // Ignored
+      }
+      this.activeVoiceAudio = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignored
+      }
+    }
+  }
+
+  private flushQueuedVoice(): void {
+    if (!this.queuedVoiceFile || !this.enabled) return;
+    const next = this.queuedVoiceFile;
+    this.queuedVoiceFile = null;
+    this.playDdzVoice(next.fileName, next.volumeScale, false);
+  }
+
+  /** Play Dou Dizhu SFX audio on concurrent buffer channel */
   playDdzAudio(fileName: string, volumeScale = 1.0, fallbackChime = 2): void {
     if (!this.enabled) return;
     this.playBuffer(`/assets/audio/ddz/${fileName}`, volumeScale, fallbackChime);
   }
 
-  /** Play Dou Dizhu read voice for played card pattern */
-  playDdzCardVoice(patternType: string, mainValue: number): void {
+  /**
+   * Play Dou Dizhu voice clip on exclusive voice channel.
+   * If `enqueueIfBusy` is true (used for secondary alerts like `baojing1`/`baojing2`),
+   * waits for the current card-reading voice clip to finish before speaking.
+   */
+  playDdzVoice(fileName: string, volumeScale = 1.25, enqueueIfBusy = false): void {
     if (!this.enabled) return;
-    // 1. Single card: value 3..15 -> 1.wav..13.wav; 16 (small joker) -> 14.wav; 17 (big joker) -> 15.wav
-    if (patternType === 'SINGLE') {
-      const v = mainValue;
-      const file = v <= 15 ? `${v - 2}.wav` : (v === 16 ? '14.wav' : '15.wav');
-      this.playDdzAudio(file, 1.25);
+
+    if (enqueueIfBusy && (this.activeVoiceSource !== null || this.activeVoiceAudio !== null)) {
+      this.queuedVoiceFile = { fileName, volumeScale };
       return;
     }
 
-    // 2. Pair: value 3..15 -> dui1.wav..dui13.wav
-    if (patternType === 'PAIR') {
-      const v = mainValue;
-      if (v >= 3 && v <= 15) {
-        this.playDdzAudio(`dui${v - 2}.wav`, 1.25);
+    const url = `/assets/audio/ddz/${fileName}`;
+    this.stopActiveVoice(true);
+
+    const ctx = this.getContext();
+    if (ctx && this.bufferCache.has(url)) {
+      try {
+        const source = ctx.createBufferSource();
+        source.buffer = this.bufferCache.get(url)!;
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(this.sfxVolume * volumeScale, ctx.currentTime);
+        source.connect(gain);
+        gain.connect(ctx.destination);
+        source.onended = () => {
+          if (this.activeVoiceSource === source) {
+            this.activeVoiceSource = null;
+            this.flushQueuedVoice();
+          }
+        };
+        this.activeVoiceSource = source;
+        source.start(0);
         return;
+      } catch {
+        // Fallback below
       }
     }
 
-    // 3. Triple without wings: tuple1..tuple13
-    if (patternType === 'TRIPLE') {
-      const v = mainValue;
-      if (v >= 3 && v <= 15) {
-        this.playDdzAudio(`tuple${v - 2}.wav`, 1.25);
-        return;
+    this.loadAudioBuffer(url).then((buf) => {
+      if (!this.enabled) return;
+      if (buf && ctx && ctx.state === 'running') {
+        try {
+          this.stopActiveVoice(false);
+          const source = ctx.createBufferSource();
+          source.buffer = buf;
+          const gain = ctx.createGain();
+          gain.gain.setValueAtTime(this.sfxVolume * volumeScale, ctx.currentTime);
+          source.connect(gain);
+          gain.connect(ctx.destination);
+          source.onended = () => {
+            if (this.activeVoiceSource === source) {
+              this.activeVoiceSource = null;
+              this.flushQueuedVoice();
+            }
+          };
+          this.activeVoiceSource = source;
+          source.start(0);
+          return;
+        } catch {
+          // Fallback below
+        }
       }
+      try {
+        this.stopActiveVoice(false);
+        const audio = new Audio(url);
+        audio.volume = Math.min(1.0, this.sfxVolume * volumeScale);
+        audio.onended = () => {
+          if (this.activeVoiceAudio === audio) {
+            this.activeVoiceAudio = null;
+            this.flushQueuedVoice();
+          }
+        };
+        this.activeVoiceAudio = audio;
+        audio.play().catch(() => {
+          if (this.activeVoiceAudio === audio) {
+            this.activeVoiceAudio = null;
+          }
+        });
+      } catch {
+        // Ignored
+      }
+    });
+  }
+
+  /**
+   * Maps Dou Dizhu internal rank value (3..17) to standard poker audio index (1..15):
+   * - 14 ('A') -> 1 (1.wav / dui1.wav / tuple1.wav)
+   * - 15 ('2') -> 2 (2.wav / dui2.wav / tuple2.wav)
+   * - 3..13 ('3'..'K') -> 3..13 (3.wav..13.wav / dui3.wav..dui13.wav / tuple3.wav..tuple13.wav)
+   * - 16 ('small_joker') -> 14 (14.wav)
+   * - 17 ('big_joker') -> 15 (15.wav)
+   */
+  private ddzValueToAudioIndex(mainValue: number): number {
+    if (mainValue === 14) return 1;
+    if (mainValue === 15) return 2;
+    if (mainValue === 16) return 14;
+    if (mainValue === 17) return 15;
+    return Math.max(3, Math.min(13, Math.round(mainValue)));
+  }
+
+  /** Play Dou Dizhu read voice for played card pattern */
+  playDdzCardVoice(patternType: string, mainValue: number): void {
+    if (!this.enabled) return;
+    const audioIdx = this.ddzValueToAudioIndex(mainValue);
+
+    // 1. Single card: A->1.wav, 2->2.wav, 3..K->3..13.wav, small_joker->14.wav, big_joker->15.wav
+    if (patternType === 'SINGLE') {
+      this.playDdzVoice(`${audioIdx}.wav`, 1.25);
+      return;
+    }
+
+    // 2. Pair: A->dui1.wav, 2->dui2.wav, 3..K->dui3..dui13.wav
+    if (patternType === 'PAIR' && audioIdx >= 1 && audioIdx <= 13) {
+      this.playDdzVoice(`dui${audioIdx}.wav`, 1.25);
+      return;
+    }
+
+    // 3. Triple without wings: A->tuple1.wav, 2->tuple2.wav, 3..K->tuple3..tuple13.wav
+    if (patternType === 'TRIPLE' && audioIdx >= 1 && audioIdx <= 13) {
+      this.playDdzVoice(`tuple${audioIdx}.wav`, 1.25);
+      return;
     }
 
     // 4. Special Patterns
     switch (patternType) {
       case 'TRIPLE_SINGLE':
-        this.playDdzAudio('sandaiyi.wav', 1.3);
+        this.playDdzVoice('sandaiyi.wav', 1.3);
         break;
       case 'TRIPLE_PAIR':
-        this.playDdzAudio('sandaier.wav', 1.3);
+        this.playDdzVoice('sandaiyidui.wav', 1.3);
         break;
       case 'STRAIGHT':
-        this.playDdzAudio('shunzi.wav', 1.3);
+        this.playDdzVoice('shunzi.wav', 1.3);
         break;
       case 'CONSECUTIVE_PAIRS':
-        this.playDdzAudio('liandui.wav', 1.3);
+        this.playDdzVoice('liandui.wav', 1.3);
         break;
       case 'AIRPLANE':
       case 'AIRPLANE_SINGLE_WINGS':
       case 'AIRPLANE_PAIR_WINGS':
-        this.playDdzAudio('feiji.wav', 1.35);
+        this.playDdzVoice('feiji.wav', 1.35);
         setTimeout(() => this.playDdzSfx('plane'), 120);
         break;
       case 'FOUR_WITH_TWO_SINGLES':
-        this.playDdzAudio('sidaier.wav', 1.3);
+        this.playDdzVoice('sidaier.wav', 1.3);
         break;
       case 'FOUR_WITH_TWO_PAIRS':
-        this.playDdzAudio('sidailiangdui.wav', 1.3);
+        this.playDdzVoice('sidailiangdui.wav', 1.3);
         break;
       case 'BOMB':
-        this.playDdzAudio('zhadan.wav', 1.4);
+        this.playDdzVoice('zhadan.wav', 1.4);
         setTimeout(() => this.playDdzSfx('bomb'), 160);
         break;
       case 'ROCKET':
-        this.playDdzAudio('wangzha.wav', 1.45);
+        this.playDdzVoice('wangzha.wav', 1.45);
         setTimeout(() => this.playDdzSfx('bomb'), 240);
         break;
     }
@@ -618,23 +758,23 @@ class SoundEngine {
     switch (action) {
       case 'pass': {
         const rand = 1 + Math.floor(Math.random() * 4);
-        this.playDdzAudio(`buyao${rand}.wav`, 1.2);
+        this.playDdzVoice(`buyao${rand}.wav`, 1.2);
         break;
       }
       case 'jiabei':
-        this.playDdzAudio('jiabei.wav', 1.25);
+        this.playDdzVoice('jiabei.wav', 1.25);
         break;
       case 'bujiabei':
-        this.playDdzAudio('bujiabei.wav', 1.2);
+        this.playDdzVoice('bujiabei.wav', 1.2);
         break;
       case 'chaojijiabei':
-        this.playDdzAudio('chaojijiabei.wav', 1.3);
+        this.playDdzVoice('chaojijiabei.wav', 1.3);
         break;
       case 'baojing1':
-        this.playDdzAudio('baojing1.wav', 1.3);
+        this.playDdzVoice('baojing1.wav', 1.3, true);
         break;
       case 'baojing2':
-        this.playDdzAudio('baojing2.wav', 1.3);
+        this.playDdzVoice('baojing2.wav', 1.3, true);
         break;
     }
   }
@@ -667,7 +807,7 @@ class SoundEngine {
     }
   }
 
-  /** Preload critical Dou Dizhu sounds for instant playback */
+  /** Preload all Dou Dizhu card voices & SFX for 0ms latency playback */
   preloadDdzAudio(): void {
     const list = [
       'Special_Bomb_New.wav',
@@ -684,13 +824,26 @@ class SoundEngine {
       'wangzha.wav',
       'sandaiyi.wav',
       'sandaier.wav',
+      'sandaiyidui.wav',
+      'sidaier.wav',
+      'sidailiangdui.wav',
       'buyao1.wav',
       'buyao2.wav',
       'buyao3.wav',
       'buyao4.wav',
       'jiabei.wav',
       'bujiabei.wav',
+      'chaojijiabei.wav',
+      'baojing1.wav',
+      'baojing2.wav',
     ];
+    for (let i = 1; i <= 15; i++) {
+      list.push(`${i}.wav`);
+      if (i <= 13) {
+        list.push(`dui${i}.wav`);
+        list.push(`tuple${i}.wav`);
+      }
+    }
     list.forEach((f) => this.loadAudioBuffer(`/assets/audio/ddz/${f}`));
   }
 

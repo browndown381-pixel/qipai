@@ -45,11 +45,11 @@ export enum PatternType {
 export interface ClassifiedPattern {
   type: PatternType;
   label: string;
-  mainValue: number; // Primary rank value used for same-type comparison
+  mainValue: number; // Primary rank value used for same-type comparison & voice reading
   candidateQuads?: number[]; // All valid candidate quad values for four-with-two comparisons
-  length: number;    // Total card count
+  length: number; // Total card count
   chainCount: number; // Number of consecutive units for straight/pairs/airplane
-  cards: CardData[];
+  cards: CardData[]; // Canonically ordered: main core cards first, kickers/wings second
   /**
    * Bomb hierarchy for Laizi modes:
    * 1 = Soft Bomb (软炸弹: 1~3 wild cards + native cards)
@@ -58,6 +58,8 @@ export interface ClassifiedPattern {
    * 4 = Rocket (王炸: small_joker + big_joker)
    */
   bombTier?: number;
+  /** Priority score in the commercial pattern recognition priority queue */
+  priority?: number;
 }
 
 export const RANK_VALUES: Record<Rank, number> = {
@@ -96,6 +98,29 @@ export const VALUE_TO_RANK: Record<number, Rank> = {
   17: 'big_joker',
 };
 
+/**
+ * Commercial Dou Dizhu Pattern Recognition Priority Table (Higher = Evaluated First).
+ * Ensures deterministic disambiguation when a card set matches multiple candidate structures
+ * (e.g. 33334444 -> AIRPLANE_SINGLE_WINGS before FOUR_WITH_TWO_PAIRS;
+ *  Laizi 5-card Straight vs Triple+Pair).
+ */
+export const PATTERN_PRIORITY: Record<PatternType, number> = {
+  [PatternType.ROCKET]: 1000,
+  [PatternType.BOMB]: 900,
+  [PatternType.AIRPLANE_PAIR_WINGS]: 820,
+  [PatternType.AIRPLANE_SINGLE_WINGS]: 810,
+  [PatternType.AIRPLANE]: 800,
+  [PatternType.CONSECUTIVE_PAIRS]: 700,
+  [PatternType.STRAIGHT]: 600,
+  [PatternType.TRIPLE_PAIR]: 520,
+  [PatternType.TRIPLE_SINGLE]: 510,
+  [PatternType.TRIPLE]: 500,
+  [PatternType.FOUR_WITH_TWO_PAIRS]: 420,
+  [PatternType.FOUR_WITH_TWO_SINGLES]: 410,
+  [PatternType.PAIR]: 300,
+  [PatternType.SINGLE]: 200,
+};
+
 export type DealMode =
   | 'classic'
   | 'no_shuffle'
@@ -109,6 +134,13 @@ const SUIT_ORDER: Record<string, number> = {
   club: 2,
   diamond: 1,
   joker: 5,
+};
+
+const SUIT_SYMBOLS: Record<string, string> = {
+  spade: '♠',
+  heart: '♥',
+  club: '♣',
+  diamond: '♦',
 };
 
 const LAIZI_ELIGIBLE_RANKS: Rank[] = [
@@ -159,6 +191,69 @@ export class DdzRules {
     });
 
     return deck;
+  }
+
+  static formatCard(card: CardData): string {
+    if (card.rank === 'big_joker') return '大王';
+    if (card.rank === 'small_joker') return '小王';
+    const suitSym = card.suit ? (SUIT_SYMBOLS[card.suit] ?? '') : '';
+    const wildTag = card.isWild ? '(赖)' : '';
+    return `${suitSym}${card.rank}${wildTag}`;
+  }
+
+  static formatCards(cards: CardData[]): string {
+    if (!cards || cards.length === 0) return '[]';
+    return `[${cards.map((c) => this.formatCard(c)).join(' ')}]`;
+  }
+
+  static valueToLabel(value: number): string {
+    if (value === 17) return '大王';
+    if (value === 16) return '小王';
+    return VALUE_TO_RANK[value] ?? String(value);
+  }
+
+  static resolveVoiceFile(patternType: PatternType | string, mainValue: number): string {
+    const audioIdx =
+      mainValue === 14
+        ? 1
+        : mainValue === 15
+          ? 2
+          : mainValue === 16
+            ? 14
+            : mainValue === 17
+              ? 15
+              : Math.max(3, Math.min(13, Math.round(mainValue)));
+
+    switch (patternType) {
+      case PatternType.SINGLE:
+        return `${audioIdx}.wav`;
+      case PatternType.PAIR:
+        return `dui${Math.min(13, audioIdx)}.wav`;
+      case PatternType.TRIPLE:
+        return `tuple${Math.min(13, audioIdx)}.wav`;
+      case PatternType.TRIPLE_SINGLE:
+        return 'sandaiyi.wav';
+      case PatternType.TRIPLE_PAIR:
+        return 'sandaiyidui.wav';
+      case PatternType.STRAIGHT:
+        return 'shunzi.wav';
+      case PatternType.CONSECUTIVE_PAIRS:
+        return 'liandui.wav';
+      case PatternType.AIRPLANE:
+      case PatternType.AIRPLANE_SINGLE_WINGS:
+      case PatternType.AIRPLANE_PAIR_WINGS:
+        return 'feiji.wav';
+      case PatternType.FOUR_WITH_TWO_SINGLES:
+        return 'sidaier.wav';
+      case PatternType.FOUR_WITH_TWO_PAIRS:
+        return 'sidailiangdui.wav';
+      case PatternType.BOMB:
+        return 'zhadan.wav';
+      case PatternType.ROCKET:
+        return 'wangzha.wav';
+      default:
+        return 'buyao1.wav';
+    }
   }
 
   static pickRandomWildRank(excludeRanks: Rank[] = []): Rank {
@@ -251,10 +346,6 @@ export class DdzRules {
     };
   }
 
-  /**
-   * Tencent Happy Dou Dizhu style "No-Shuffle" (不洗牌) Chunked Riffle & Clump Deal:
-   * Preserves rank clumps and sequential runs while interleaving chunks and dealing in 3~4 card packets.
-   */
   private static generateNoShuffleDeal(): {
     seat0: CardData[];
     seat1: CardData[];
@@ -358,6 +449,149 @@ export class DdzRules {
     });
   }
 
+  /**
+   * Canonically orders played cards so that the core pattern (Triple, Airplane chain, Quad)
+   * appears on the left and kickers/wings appear on the right, with wild cards placed in the
+   * exact group they substitute.
+   */
+  static orderCardsForPattern(
+    cards: CardData[],
+    type: PatternType,
+    mainValue: number,
+    chainCount: number,
+    wildRanks: Rank[] = []
+  ): CardData[] {
+    const sorted = this.sortCardsDesc(cards);
+    const wildSet = new Set<Rank>(wildRanks);
+    const isWildCard = (c: CardData) => Boolean(c.isWild || wildSet.has(c.rank));
+
+    if (
+      type === PatternType.SINGLE ||
+      type === PatternType.PAIR ||
+      type === PatternType.TRIPLE ||
+      type === PatternType.BOMB ||
+      type === PatternType.ROCKET
+    ) {
+      // Natural cards of mainValue first, then wild substitutes
+      const nats = sorted.filter((c) => !isWildCard(c));
+      const wilds = sorted.filter((c) => isWildCard(c));
+      return [...nats, ...wilds];
+    }
+
+    if (
+      type === PatternType.TRIPLE_SINGLE ||
+      type === PatternType.TRIPLE_PAIR ||
+      type === PatternType.FOUR_WITH_TWO_SINGLES ||
+      type === PatternType.FOUR_WITH_TWO_PAIRS
+    ) {
+      const coreSize =
+        type === PatternType.FOUR_WITH_TWO_SINGLES || type === PatternType.FOUR_WITH_TWO_PAIRS
+          ? 4
+          : 3;
+      const coreCards: CardData[] = [];
+      const usedIds = new Set<string>();
+
+      // 1. Pick non-wild cards matching mainValue
+      for (const c of sorted) {
+        if (coreCards.length < coreSize && !isWildCard(c) && c.value === mainValue) {
+          coreCards.push(c);
+          usedIds.add(c.id);
+        }
+      }
+      // 2. Pick wild cards matching mainValue if still needed
+      for (const c of sorted) {
+        if (coreCards.length < coreSize && !usedIds.has(c.id) && c.value === mainValue) {
+          coreCards.push(c);
+          usedIds.add(c.id);
+        }
+      }
+      // 3. Pick any remaining wild cards to complete the core
+      for (const c of sorted) {
+        if (coreCards.length < coreSize && !usedIds.has(c.id) && isWildCard(c)) {
+          coreCards.push(c);
+          usedIds.add(c.id);
+        }
+      }
+
+      const wingCards = sorted.filter((c) => !usedIds.has(c.id));
+      // Sort wings by frequency desc then value desc
+      const wingFreq = new Map<number, number>();
+      for (const w of wingCards) {
+        wingFreq.set(w.value, (wingFreq.get(w.value) ?? 0) + 1);
+      }
+      wingCards.sort((a, b) => {
+        const fa = wingFreq.get(a.value) ?? 1;
+        const fb = wingFreq.get(b.value) ?? 1;
+        if (fb !== fa) return fb - fa;
+        return b.value - a.value;
+      });
+      return [...coreCards, ...wingCards];
+    }
+
+    if (
+      type === PatternType.AIRPLANE ||
+      type === PatternType.AIRPLANE_SINGLE_WINGS ||
+      type === PatternType.AIRPLANE_PAIR_WINGS ||
+      type === PatternType.CONSECUTIVE_PAIRS ||
+      type === PatternType.STRAIGHT
+    ) {
+      const unitSize =
+        type === PatternType.STRAIGHT
+          ? 1
+          : type === PatternType.CONSECUTIVE_PAIRS
+            ? 2
+            : 3;
+      const minVal = mainValue - chainCount + 1;
+      const usedIds = new Set<string>();
+      const coreSlots: CardData[][] = [];
+
+      // First pass: fill each rank slot [mainValue down to minVal] with natural cards
+      for (let v = mainValue; v >= minVal; v--) {
+        const slot: CardData[] = [];
+        for (const c of sorted) {
+          if (slot.length < unitSize && !usedIds.has(c.id) && !isWildCard(c) && c.value === v) {
+            slot.push(c);
+            usedIds.add(c.id);
+          }
+        }
+        // Native wild card of exact rank v
+        for (const c of sorted) {
+          if (slot.length < unitSize && !usedIds.has(c.id) && isWildCard(c) && c.value === v) {
+            slot.push(c);
+            usedIds.add(c.id);
+          }
+        }
+        coreSlots.push(slot);
+      }
+
+      // Second pass: fill missing core slots using remaining wild cards
+      for (const slot of coreSlots) {
+        while (slot.length < unitSize) {
+          const wild = sorted.find((c) => !usedIds.has(c.id) && isWildCard(c));
+          if (!wild) break;
+          slot.push(wild);
+          usedIds.add(wild.id);
+        }
+      }
+
+      const orderedCore = coreSlots.flat();
+      const wingCards = sorted.filter((c) => !usedIds.has(c.id));
+      const wingFreq = new Map<number, number>();
+      for (const w of wingCards) {
+        wingFreq.set(w.value, (wingFreq.get(w.value) ?? 0) + 1);
+      }
+      wingCards.sort((a, b) => {
+        const fa = wingFreq.get(a.value) ?? 1;
+        const fb = wingFreq.get(b.value) ?? 1;
+        if (fb !== fa) return fb - fa;
+        return b.value - a.value;
+      });
+      return [...orderedCore, ...wingCards];
+    }
+
+    return sorted;
+  }
+
   static countByValue(cards: CardData[]): Map<number, CardData[]> {
     const map = new Map<number, CardData[]>();
     for (const card of cards) {
@@ -369,8 +603,17 @@ export class DdzRules {
   }
 
   /**
-   * Authoritative Pattern Recognition aligned with Tencent Happy Dou Dizhu Classic & Laizi Modes.
-   * Supports Classic, Single-Laizi, and Heaven-Earth Dual-Laizi (天地赖子) with Soft/Hard/Pure Laizi Bomb tiers.
+   * Authoritative Priority-Queue Pattern Recognition Engine.
+   * Evaluates all legal interpretations of `cards` (including Laizi wild substitutions)
+   * and returns the highest-priority pattern from the commercial Dou Dizhu Priority Queue:
+   *   1. Rocket (王炸)
+   *   2. Bomb (纯赖子炸 > 硬炸弹 > 软炸弹)
+   *   3. Airplane with Pair Wings / Single Wings / Pure Airplane (飞机)
+   *   4. Consecutive Pairs (连对)
+   *   5. Straight (顺子)
+   *   6. Triple with Pair / Single / Pure Triple (三带)
+   *   7. Four with Two Pairs / Two Singles (四带二)
+   *   8. Pair / Single (对子 / 单张)
    */
   static identifyPattern(cards: CardData[], wildRanks: Rank[] = []): ClassifiedPattern | null {
     const n = cards.length;
@@ -380,313 +623,99 @@ export class DdzRules {
     const wildSet = new Set<Rank>(wildRanks);
     const wildCards = sorted.filter((c) => Boolean(c.isWild || wildSet.has(c.rank)));
 
-    // Try native (non-substituted) pattern first if no wild cards or if native forms a hard bomb / rocket
-    const nativePattern = this.identifyNativePattern(sorted);
+    // Fast path when no wild cards are present in the played set
     if (wildCards.length === 0) {
-      return nativePattern;
+      const nativeCandidates = this.enumerateNativePatterns(sorted, wildRanks);
+      if (nativeCandidates.length === 0) return null;
+      nativeCandidates.sort((a, b) => this.comparePatternPriority(b, a));
+      return nativeCandidates[0];
     }
 
-    // If all 4 cards are wild cards -> Pure Laizi Bomb (纯赖子炸, bombTier = 3)
+    // Pure Laizi Bomb (4 wild cards)
     if (n === 4 && wildCards.length === 4) {
-      return {
-        type: PatternType.BOMB,
-        label: '纯赖子炸',
-        mainValue: sorted[0].value,
-        length: 4,
-        chainCount: 1,
-        cards: sorted,
-        bombTier: 3,
-      };
+      return this.buildClassifiedPattern(
+        PatternType.BOMB,
+        '纯赖子炸',
+        sorted[0].value,
+        4,
+        1,
+        sorted,
+        wildRanks,
+        { bombTier: 3 }
+      );
     }
 
-    // If native pattern is a Hard Bomb (4 identical cards, which means all 4 share the exact same rank),
-    // wait: if that rank is itself a wild rank, 4 wild cards is already handled above as Pure Laizi Bomb.
-    if (nativePattern && (nativePattern.type === PatternType.ROCKET || nativePattern.type === PatternType.BOMB)) {
-      return nativePattern;
+    // Evaluate all candidates across native + Laizi priority queue
+    const allCandidates = this.identifyAllPatterns(sorted, wildRanks);
+    if (allCandidates.length > 0) {
+      allCandidates.sort((a, b) => this.comparePatternPriority(b, a));
+      return allCandidates[0];
     }
 
-    // Try Laizi-assisted pattern recognition
-    const laiziPattern = this.identifyLaiziPattern(sorted, wildCards);
-    if (laiziPattern) {
-      return laiziPattern;
-    }
-
-    return nativePattern;
-  }
-
-  private static identifyNativePattern(sorted: CardData[]): ClassifiedPattern | null {
-    const n = sorted.length;
-    if (n === 0) return null;
-
-    const valMap = this.countByValue(sorted);
-    const distinctValues = Array.from(valMap.keys()).sort((a, b) => a - b);
-
-    // 1. Single
-    if (n === 1) {
-      return {
-        type: PatternType.SINGLE,
-        label: '单张',
-        mainValue: sorted[0].value,
-        length: 1,
-        chainCount: 1,
-        cards: sorted,
-      };
-    }
-
-    // 2. Rocket or Pair
-    if (n === 2) {
-      if (valMap.has(16) && valMap.has(17)) {
-        return {
-          type: PatternType.ROCKET,
-          label: '王炸',
-          mainValue: 17,
-          length: 2,
-          chainCount: 1,
-          cards: sorted,
-          bombTier: 4,
-        };
-      }
-      if (distinctValues.length === 1) {
-        return {
-          type: PatternType.PAIR,
-          label: '对子',
-          mainValue: distinctValues[0],
-          length: 2,
-          chainCount: 1,
-          cards: sorted,
-        };
-      }
-      return null;
-    }
-
-    // 3. Triple
-    if (n === 3) {
-      if (distinctValues.length === 1) {
-        return {
-          type: PatternType.TRIPLE,
-          label: '三不带',
-          mainValue: distinctValues[0],
-          length: 3,
-          chainCount: 1,
-          cards: sorted,
-        };
-      }
-      return null;
-    }
-
-    // 4. Hard Bomb or Triple + Single
-    if (n === 4) {
-      if (distinctValues.length === 1) {
-        return {
-          type: PatternType.BOMB,
-          label: '硬炸弹',
-          mainValue: distinctValues[0],
-          length: 4,
-          chainCount: 1,
-          cards: sorted,
-          bombTier: 2,
-        };
-      }
-      for (const [val, group] of valMap.entries()) {
-        if (group.length === 3) {
-          return {
-            type: PatternType.TRIPLE_SINGLE,
-            label: '三带一',
-            mainValue: val,
-            length: 4,
-            chainCount: 1,
-            cards: sorted,
-          };
-        }
-      }
-      return null;
-    }
-
-    // 5. Triple + Pair (5 cards)
-    if (n === 5) {
-      let tripleVal: number | null = null;
-      let hasPair = false;
-      for (const [val, group] of valMap.entries()) {
-        if (group.length === 3) tripleVal = val;
-        if (group.length === 2) hasPair = true;
-      }
-      if (tripleVal !== null && hasPair) {
-        return {
-          type: PatternType.TRIPLE_PAIR,
-          label: '三带一对',
-          mainValue: tripleVal,
-          length: 5,
-          chainCount: 1,
-          cards: sorted,
-        };
-      }
-    }
-
-    // 6. Straight (≥5 consecutive singles, excludes 2 and Jokers: value <= 14)
-    if (n >= 5 && distinctValues.length === n) {
-      const maxVal = distinctValues[distinctValues.length - 1];
-      const minVal = distinctValues[0];
-      if (maxVal <= 14 && maxVal - minVal === n - 1) {
-        return {
-          type: PatternType.STRAIGHT,
-          label: '顺子',
-          mainValue: maxVal,
-          length: n,
-          chainCount: n,
-          cards: sorted,
-        };
-      }
-    }
-
-    // 7. Consecutive Pairs (≥3 consecutive pairs, excludes 2 and Jokers: value <= 14)
-    if (n >= 6 && n % 2 === 0 && distinctValues.length === n / 2) {
-      const allPairs = distinctValues.every((v) => (valMap.get(v)?.length ?? 0) === 2);
-      const maxVal = distinctValues[distinctValues.length - 1];
-      const minVal = distinctValues[0];
-      if (allPairs && maxVal <= 14 && maxVal - minVal === distinctValues.length - 1) {
-        return {
-          type: PatternType.CONSECUTIVE_PAIRS,
-          label: '连对',
-          mainValue: maxVal,
-          length: n,
-          chainCount: distinctValues.length,
-          cards: sorted,
-        };
-      }
-    }
-
-    // 8. Four with Two Singles (6 cards) or Four with Two Pairs (8 cards)
-    const quadValues = distinctValues.filter((v) => (valMap.get(v)?.length ?? 0) === 4);
-    if (quadValues.length >= 1) {
-      if (n === 6) {
-        const carriesRocket = valMap.has(16) && valMap.has(17);
-        if (!carriesRocket) {
-          return {
-            type: PatternType.FOUR_WITH_TWO_SINGLES,
-            label: '四带二',
-            mainValue: quadValues[quadValues.length - 1],
-            candidateQuads: quadValues,
-            length: 6,
-            chainCount: 1,
-            cards: sorted,
-          };
-        }
-      }
-      if (n === 8) {
-        // Can be 1 quad + 2 pairs (e.g. 4444 + 55 + 66)
-        // OR 2 quads (e.g. 4444 + 5555, where one is the quad and the other is two pairs 55+55 or 44+44)
-        for (let i = quadValues.length - 1; i >= 0; i--) {
-          const qVal = quadValues[i];
-          let validPairs = true;
-          let pairCount = 0;
-          for (const [v, grp] of valMap.entries()) {
-            if (v === qVal) continue;
-            if (grp.length === 2) {
-              pairCount += 1;
-            } else if (grp.length === 4) {
-              pairCount += 2;
-            } else {
-              validPairs = false;
-              break;
-            }
-          }
-          if (validPairs && pairCount === 2) {
-            return {
-              type: PatternType.FOUR_WITH_TWO_PAIRS,
-              label: '四带两对',
-              mainValue: qVal,
-              candidateQuads: quadValues,
-              length: 8,
-              chainCount: 1,
-              cards: sorted,
-            };
-          }
-        }
-      }
-    }
-
-    // 9. Airplane (Pure, Single Wings, or Pair Wings)
-    const tripleCandidateVals = distinctValues.filter(
-      (v) => v <= 14 && (valMap.get(v)?.length ?? 0) >= 3
-    );
-
-    if (tripleCandidateVals.length >= 2) {
-      for (let k = tripleCandidateVals.length; k >= 2; k--) {
-        for (let startIdx = tripleCandidateVals.length - k; startIdx >= 0; startIdx--) {
-          const seq = tripleCandidateVals.slice(startIdx, startIdx + k);
-          if (seq[seq.length - 1] - seq[0] !== k - 1) continue;
-
-          if (n === 3 * k) {
-            return {
-              type: PatternType.AIRPLANE,
-              label: '飞机',
-              mainValue: seq[seq.length - 1],
-              length: n,
-              chainCount: k,
-              cards: sorted,
-            };
-          }
-
-          if (n === 4 * k) {
-            const leftoverCounts = new Map<number, number>();
-            for (const [v, grp] of valMap.entries()) {
-              const used = seq.includes(v) ? 3 : 0;
-              const rem = grp.length - used;
-              if (rem > 0) leftoverCounts.set(v, rem);
-            }
-            const hasRocketWing = leftoverCounts.has(16) && leftoverCounts.has(17);
-            if (!hasRocketWing) {
-              return {
-                type: PatternType.AIRPLANE_SINGLE_WINGS,
-                label: '飞机带翅膀',
-                mainValue: seq[seq.length - 1],
-                length: n,
-                chainCount: k,
-                cards: sorted,
-              };
-            }
-          }
-
-          if (n === 5 * k) {
-            let validPairs = true;
-            let pairCount = 0;
-            for (const [v, grp] of valMap.entries()) {
-              const used = seq.includes(v) ? 3 : 0;
-              const rem = grp.length - used;
-              if (rem === 0) continue;
-              if (rem % 2 === 0 && v < 16) {
-                pairCount += rem / 2;
-              } else {
-                validPairs = false;
-                break;
-              }
-            }
-            if (validPairs && pairCount === k) {
-              return {
-                type: PatternType.AIRPLANE_PAIR_WINGS,
-                label: '飞机带双翼',
-                mainValue: seq[seq.length - 1],
-                length: n,
-                chainCount: k,
-                cards: sorted,
-              };
-            }
-          }
-        }
-      }
-    }
-
-    return null;
+    // Fallback for >5 wild cards edge case
+    return this.identifyLaiziPattern(sorted, wildCards, wildRanks);
   }
 
   /**
-   * Wild-Card (赖子) Pattern Resolver:
-   * Wild cards can substitute any non-Joker rank (3..2, values 3..15).
-   * Evaluates Soft Bomb first, then resolves optimal highest-mainValue pattern.
+   * Compares two candidate interpretations of the same played card set according to
+   * the commercial Dou Dizhu Priority Queue (`PATTERN_PRIORITY`), then `bombTier`,
+   * then `chainCount`, then `mainValue`.
+   */
+  static comparePatternPriority(a: ClassifiedPattern, b: ClassifiedPattern): number {
+    const pa = a.priority ?? PATTERN_PRIORITY[a.type] ?? 0;
+    const pb = b.priority ?? PATTERN_PRIORITY[b.type] ?? 0;
+    if (pa !== pb) return pa - pb;
+    const ta = a.bombTier ?? 0;
+    const tb = b.bombTier ?? 0;
+    if (ta !== tb) return ta - tb;
+    if (a.chainCount !== b.chainCount) return a.chainCount - b.chainCount;
+    return a.mainValue - b.mainValue;
+  }
+
+  private static buildClassifiedPattern(
+    type: PatternType,
+    label: string,
+    mainValue: number,
+    length: number,
+    chainCount: number,
+    rawCards: CardData[],
+    wildRanks: Rank[],
+    extra: Partial<ClassifiedPattern> = {}
+  ): ClassifiedPattern {
+    const orderedCards = this.orderCardsForPattern(
+      rawCards,
+      type,
+      mainValue,
+      chainCount,
+      wildRanks
+    );
+    const basePriority = PATTERN_PRIORITY[type] ?? 0;
+    const priority =
+      type === PatternType.BOMB
+        ? basePriority + (extra.bombTier ?? 2) * 15
+        : basePriority;
+
+    return {
+      type,
+      label,
+      mainValue,
+      length,
+      chainCount,
+      cards: orderedCards,
+      priority,
+      ...extra,
+    };
+  }
+
+  /**
+   * Wild-Card (赖子) Pattern Resolver using Priority Queue Order:
+   * Prevents phantom rank hallucinations by requiring the main Triple/Quad rank
+   * to be anchored by at least 1 natural card or the wild card's own rank.
    */
   private static identifyLaiziPattern(
     sorted: CardData[],
-    wildCards: CardData[]
+    wildCards: CardData[],
+    wildRanks: Rank[] = []
   ): ClassifiedPattern | null {
     const n = sorted.length;
     const wCount = wildCards.length;
@@ -694,116 +723,124 @@ export class DdzRules {
     const naturals = sorted.filter((c) => !wildIds.has(c.id));
     const natMap = this.countByValue(naturals);
     const natVals = Array.from(natMap.keys()).sort((a, b) => a - b);
+    const wildOwnVals = new Set(wildCards.map((c) => c.value));
     const hasJokersInNaturals = natVals.some((v) => v >= 16);
 
-    // 1. Single (1 wild card)
+    // 1. Single (1 card)
     if (n === 1) {
-      return {
-        type: PatternType.SINGLE,
-        label: '单张',
-        mainValue: sorted[0].value,
-        length: 1,
-        chainCount: 1,
-        cards: sorted,
-      };
+      return this.buildClassifiedPattern(
+        PatternType.SINGLE,
+        '单张',
+        sorted[0].value,
+        1,
+        1,
+        sorted,
+        wildRanks
+      );
     }
 
-    // 2. Pair (2 cards with >=1 wild; note: wild cannot pair with a Joker)
+    // 2. Pair (2 cards; wild cannot pair with a Joker)
     if (n === 2) {
       if (hasJokersInNaturals) return null;
       const mainVal = naturals.length === 1 ? naturals[0].value : sorted[0].value;
-      return {
-        type: PatternType.PAIR,
-        label: '对子',
-        mainValue: mainVal,
-        length: 2,
-        chainCount: 1,
-        cards: sorted,
-      };
+      return this.buildClassifiedPattern(
+        PatternType.PAIR,
+        '对子',
+        mainVal,
+        2,
+        1,
+        sorted,
+        wildRanks
+      );
     }
 
-    // 3. Triple (3 cards with >=1 wild; cannot combine with Jokers)
+    // 3. Triple (3 cards; cannot combine with Jokers)
     if (n === 3) {
       if (hasJokersInNaturals) return null;
       if (natVals.length <= 1) {
         const mainVal = natVals.length === 1 ? natVals[0] : sorted[0].value;
-        return {
-          type: PatternType.TRIPLE,
-          label: '三不带',
-          mainValue: mainVal,
-          length: 3,
-          chainCount: 1,
-          cards: sorted,
-        };
+        return this.buildClassifiedPattern(
+          PatternType.TRIPLE,
+          '三不带',
+          mainVal,
+          3,
+          1,
+          sorted,
+          wildRanks
+        );
       }
       return null;
     }
 
     // 4. 4 Cards: Soft Bomb (软炸弹) vs Triple + Single (三带一)
     if (n === 4) {
-      // Soft Bomb: all natural cards share 1 rank <= 15
       if (!hasJokersInNaturals && natVals.length === 1) {
-        return {
-          type: PatternType.BOMB,
-          label: '软炸弹',
-          mainValue: natVals[0],
-          length: 4,
-          chainCount: 1,
-          cards: sorted,
-          bombTier: 1,
-        };
+        return this.buildClassifiedPattern(
+          PatternType.BOMB,
+          '软炸弹',
+          natVals[0],
+          4,
+          1,
+          sorted,
+          wildRanks,
+          { bombTier: 1 }
+        );
       }
-      // Triple + Single: find highest rank v (3..15) that can form a triple using naturals + wilds
+      // Triple + Single: rank v must exist in naturals OR be one of the wild cards' own rank
       for (let v = 15; v >= 3; v--) {
         const natCount = natMap.get(v)?.length ?? 0;
+        if (natCount === 0 && !wildOwnVals.has(v)) continue;
         const needed = Math.max(0, 3 - natCount);
         if (needed <= wCount) {
-          return {
-            type: PatternType.TRIPLE_SINGLE,
-            label: '三带一',
-            mainValue: v,
-            length: 4,
-            chainCount: 1,
-            cards: sorted,
-          };
+          return this.buildClassifiedPattern(
+            PatternType.TRIPLE_SINGLE,
+            '三带一',
+            v,
+            4,
+            1,
+            sorted,
+            wildRanks
+          );
         }
       }
       return null;
     }
 
-    // 5. 5 Cards: Triple + Pair OR 5-Card Straight
+    // 5. 5 Cards: Straight (顺子) vs Triple + Pair (三带一对)
     if (n === 5) {
-      // Check 5-Card Straight first (cannot contain 2 or Jokers in naturals)
       const straight5 = this.tryMatchLaiziStraight(natMap, wCount, 5);
       if (straight5 !== null) {
-        return {
-          type: PatternType.STRAIGHT,
-          label: '顺子',
-          mainValue: straight5,
-          length: 5,
-          chainCount: 5,
-          cards: sorted,
-        };
+        return this.buildClassifiedPattern(
+          PatternType.STRAIGHT,
+          '顺子',
+          straight5,
+          5,
+          5,
+          sorted,
+          wildRanks
+        );
       }
 
-      // Check Triple + Pair (neither triple nor pair can be Joker)
       if (!hasJokersInNaturals && natVals.length <= 2) {
         for (let tripleV = 15; tripleV >= 3; tripleV--) {
+          const cT = natMap.get(tripleV)?.length ?? 0;
+          if (cT === 0 && !wildOwnVals.has(tripleV)) continue;
           for (let pairV = 15; pairV >= 3; pairV--) {
             if (tripleV === pairV) continue;
+            const cP = natMap.get(pairV)?.length ?? 0;
+            if (cP === 0 && !wildOwnVals.has(pairV)) continue;
             const otherNats = natVals.filter((v) => v !== tripleV && v !== pairV);
             if (otherNats.length > 0) continue;
-            const cT = natMap.get(tripleV)?.length ?? 0;
-            const cP = natMap.get(pairV)?.length ?? 0;
             if (cT <= 3 && cP <= 2 && 3 - cT + (2 - cP) === wCount) {
-              return {
-                type: PatternType.TRIPLE_PAIR,
-                label: '三带一对',
-                mainValue: tripleV,
-                length: 5,
-                chainCount: 1,
-                cards: sorted,
-              };
+              return this.buildClassifiedPattern(
+                PatternType.TRIPLE_PAIR,
+                '三带一对',
+                tripleV,
+                5,
+                1,
+                sorted,
+                wildRanks
+              );
             }
           }
         }
@@ -811,56 +848,59 @@ export class DdzRules {
       return null;
     }
 
-    // 6. Straight (n >= 5)
-    const straightMain = this.tryMatchLaiziStraight(natMap, wCount, n);
-    if (straightMain !== null) {
-      return {
-        type: PatternType.STRAIGHT,
-        label: '顺子',
-        mainValue: straightMain,
-        length: n,
-        chainCount: n,
-        cards: sorted,
-      };
-    }
-
-    // 7. Consecutive Pairs (n >= 6 && n % 2 === 0)
-    if (n >= 6 && n % 2 === 0) {
-      const pairCount = n / 2;
-      const consecPairsMain = this.tryMatchLaiziConsecutivePairs(natMap, wCount, pairCount);
-      if (consecPairsMain !== null) {
-        return {
-          type: PatternType.CONSECUTIVE_PAIRS,
-          label: '连对',
-          mainValue: consecPairsMain,
-          length: n,
-          chainCount: pairCount,
-          cards: sorted,
-        };
-      }
-    }
-
-    // 8. Airplane (Pure, Single Wings, or Pair Wings)
-    const airplanePattern = this.tryMatchLaiziAirplane(sorted, natMap, wCount);
+    // 6. Airplane (Pure, Single Wings, or Pair Wings) — Priority 800..820
+    const airplanePattern = this.tryMatchLaiziAirplane(sorted, natMap, wCount, wildRanks);
     if (airplanePattern) {
       return airplanePattern;
     }
 
-    // 9. Four with Two Singles (n === 6) or Four with Two Pairs (n === 8)
+    // 7. Consecutive Pairs (n >= 6 && n % 2 === 0) — Priority 700
+    if (n >= 6 && n % 2 === 0) {
+      const pairCount = n / 2;
+      const consecPairsMain = this.tryMatchLaiziConsecutivePairs(natMap, wCount, pairCount);
+      if (consecPairsMain !== null) {
+        return this.buildClassifiedPattern(
+          PatternType.CONSECUTIVE_PAIRS,
+          '连对',
+          consecPairsMain,
+          n,
+          pairCount,
+          sorted,
+          wildRanks
+        );
+      }
+    }
+
+    // 8. Straight (n >= 5) — Priority 600
+    const straightMain = this.tryMatchLaiziStraight(natMap, wCount, n);
+    if (straightMain !== null) {
+      return this.buildClassifiedPattern(
+        PatternType.STRAIGHT,
+        '顺子',
+        straightMain,
+        n,
+        n,
+        sorted,
+        wildRanks
+      );
+    }
+
+    // 9. Four with Two Singles (n === 6) or Four with Two Pairs (n === 8) — Priority 410..420
     if (n === 6) {
       const carriesRocket = natMap.has(16) && natMap.has(17);
       if (!carriesRocket) {
         for (let qv = 15; qv >= 3; qv--) {
           const natCount = natMap.get(qv)?.length ?? 0;
           if (natCount >= 1 && 4 - natCount <= wCount) {
-            return {
-              type: PatternType.FOUR_WITH_TWO_SINGLES,
-              label: '四带二',
-              mainValue: qv,
-              length: 6,
-              chainCount: 1,
-              cards: sorted,
-            };
+            return this.buildClassifiedPattern(
+              PatternType.FOUR_WITH_TWO_SINGLES,
+              '四带二',
+              qv,
+              6,
+              1,
+              sorted,
+              wildRanks
+            );
           }
         }
       }
@@ -869,6 +909,7 @@ export class DdzRules {
     if (n === 8) {
       for (let qv = 15; qv >= 3; qv--) {
         const natCount = natMap.get(qv)?.length ?? 0;
+        if (natCount === 0 && !wildOwnVals.has(qv)) continue;
         const neededWildsForQuad = Math.max(0, 4 - natCount);
         if (neededWildsForQuad > wCount) continue;
         const remWilds = wCount - neededWildsForQuad;
@@ -894,14 +935,15 @@ export class DdzRules {
         if (valid && wildsForPairs <= remWilds && (remWilds - wildsForPairs) % 2 === 0) {
           pairsCount += (remWilds - wildsForPairs) / 2;
           if (pairsCount === 2) {
-            return {
-              type: PatternType.FOUR_WITH_TWO_PAIRS,
-              label: '四带两对',
-              mainValue: qv,
-              length: 8,
-              chainCount: 1,
-              cards: sorted,
-            };
+            return this.buildClassifiedPattern(
+              PatternType.FOUR_WITH_TWO_PAIRS,
+              '四带两对',
+              qv,
+              8,
+              1,
+              sorted,
+              wildRanks
+            );
           }
         }
       }
@@ -912,10 +954,9 @@ export class DdzRules {
 
   private static tryMatchLaiziStraight(
     natMap: Map<number, CardData[]>,
-    wCount: number,
+    _wCount: number,
     length: number
   ): number | null {
-    // Naturals cannot contain >=15 (2 or Jokers) or duplicates
     for (const [v, grp] of natMap.entries()) {
       if (v > 14 || grp.length > 1) return null;
     }
@@ -971,10 +1012,10 @@ export class DdzRules {
   private static tryMatchLaiziAirplane(
     sorted: CardData[],
     natMap: Map<number, CardData[]>,
-    wCount: number
+    wCount: number,
+    wildRanks: Rank[] = []
   ): ClassifiedPattern | null {
     const n = sorted.length;
-    // 20 cards max in hand => chains up to 6 (18 pure) / 5 (20 single wings) / 4 (20 pair wings)
     for (let k = 6; k >= 2; k--) {
       if (n !== 3 * k && n !== 4 * k && n !== 5 * k) continue;
 
@@ -990,7 +1031,6 @@ export class DdzRules {
         if (wildsForCore > wCount) continue;
 
         if (n === 3 * k) {
-          // Pure airplane: all naturals must be inside [minVal, maxVal] with count <= 3
           for (const [v, grp] of natMap.entries()) {
             if (v < minVal || v > maxVal || grp.length > 3) {
               possible = false;
@@ -998,29 +1038,30 @@ export class DdzRules {
             }
           }
           if (possible && wildsForCore === wCount) {
-            return {
-              type: PatternType.AIRPLANE,
-              label: '飞机',
-              mainValue: maxVal,
-              length: n,
-              chainCount: k,
-              cards: sorted,
-            };
+            return this.buildClassifiedPattern(
+              PatternType.AIRPLANE,
+              '飞机',
+              maxVal,
+              n,
+              k,
+              sorted,
+              wildRanks
+            );
           }
         } else if (n === 4 * k) {
           const carriesRocket = natMap.has(16) && natMap.has(17);
           if (!carriesRocket) {
-            return {
-              type: PatternType.AIRPLANE_SINGLE_WINGS,
-              label: '飞机带翅膀',
-              mainValue: maxVal,
-              length: n,
-              chainCount: k,
-              cards: sorted,
-            };
+            return this.buildClassifiedPattern(
+              PatternType.AIRPLANE_SINGLE_WINGS,
+              '飞机带翅膀',
+              maxVal,
+              n,
+              k,
+              sorted,
+              wildRanks
+            );
           }
         } else if (n === 5 * k) {
-          // Remaining naturals + remaining wilds must form k pairs (no jokers)
           const remWilds = wCount - wildsForCore;
           let wildsForWings = 0;
           for (const [v, grp] of natMap.entries()) {
@@ -1034,14 +1075,15 @@ export class DdzRules {
             if (rem % 2 === 1) wildsForWings += 1;
           }
           if (possible && wildsForWings <= remWilds && (remWilds - wildsForWings) % 2 === 0) {
-            return {
-              type: PatternType.AIRPLANE_PAIR_WINGS,
-              label: '飞机带双翼',
-              mainValue: maxVal,
-              length: n,
-              chainCount: k,
-              cards: sorted,
-            };
+            return this.buildClassifiedPattern(
+              PatternType.AIRPLANE_PAIR_WINGS,
+              '飞机带双翼',
+              maxVal,
+              n,
+              k,
+              sorted,
+              wildRanks
+            );
           }
         }
       }
@@ -1050,11 +1092,10 @@ export class DdzRules {
   }
 
   /**
-   * Resolve `cards` against an optional `target`.
-   * `identifyPattern` returns ONE interpretation, but some card sets are legitimately ambiguous
-   * (e.g. 44445555 = 四带两对 or 飞机带翅膀; 333444555666 = 飞机 or 三连飞机带翅膀; laizi substitutions).
-   * If the primary interpretation cannot beat the target, look for any other legal interpretation
-   * that can. Falls back to the primary interpretation (caller reports the usual error).
+   * Resolve `cards` against an optional `target` using the Priority Queue.
+   * If `target` is null (free lead), returns the highest-priority interpretation.
+   * If `target` is present, prefers an interpretation of the exact same pattern type
+   * that beats `target` (or a Bomb/Rocket if no same-type match exists).
    */
   static identifyPatternFor(
     cards: CardData[],
@@ -1063,22 +1104,28 @@ export class DdzRules {
   ): ClassifiedPattern | null {
     const primary = this.identifyPattern(cards, wildRanks);
     if (!target) return primary;
-    if (primary && this.canBeat(primary, target)) return primary;
-
-    let best: ClassifiedPattern | null = null;
-    for (const alt of this.identifyAllPatterns(cards, wildRanks)) {
-      if (!this.canBeat(alt, target)) continue;
-      if (!best || alt.mainValue > best.mainValue) best = alt;
+    if (primary && primary.type === target.type && this.canBeat(primary, target)) {
+      return primary;
     }
-    return best ?? primary;
+
+    const all = this.identifyAllPatterns(cards, wildRanks);
+    const beatingCandidates = all.filter((alt) => this.canBeat(alt, target));
+    if (beatingCandidates.length === 0) return primary;
+
+    // Prefer matching target's exact PatternType first, then sort by priority queue
+    beatingCandidates.sort((a, b) => {
+      const aSameType = a.type === target.type ? 1 : 0;
+      const bSameType = b.type === target.type ? 1 : 0;
+      if (aSameType !== bSameType) return bSameType - aSameType;
+      return this.comparePatternPriority(b, a);
+    });
+    return beatingCandidates[0];
   }
 
-  /** Max wild cards for exhaustive substitution (13 ranks multichoose w, w=5 -> 6188 combos). */
   private static readonly MAX_WILDS_FOR_ENUMERATION = 5;
 
   /**
-   * Every legal interpretation of `cards` (deduplicated by type/length/chain/mainValue/tier).
-   * With wild cards each wild is exhaustively substituted by a non-joker rank (3..2).
+   * Enumerates every legal interpretation of `cards`, sorted by the commercial Priority Queue.
    */
   static identifyAllPatterns(cards: CardData[], wildRanks: Rank[] = []): ClassifiedPattern[] {
     if (cards.length === 0) return [];
@@ -1086,26 +1133,73 @@ export class DdzRules {
     const wildSet = new Set<Rank>(wildRanks);
     const wilds = sorted.filter((c) => Boolean(c.isWild || wildSet.has(c.rank)));
     const naturals = sorted.filter((c) => !(c.isWild || wildSet.has(c.rank)));
+    const wildOwnVals = new Set(wilds.map((c) => c.value));
+    const natVals = new Set(naturals.map((c) => c.value));
     const seen = new Set<string>();
     const out: ClassifiedPattern[] = [];
 
     const push = (p: ClassifiedPattern, tier: number | undefined) => {
-      const pattern: ClassifiedPattern = { ...p, cards: sorted };
-      if (p.type === PatternType.BOMB) {
-        pattern.bombTier = tier;
-        pattern.label = tier === 3 ? '纯赖子炸' : tier === 1 ? '软炸弹' : '硬炸弹';
+      // Prevent phantom Triple/Quad mainValue when wilds substitute a rank not present in naturals or wilds
+      if (
+        wilds.length > 0 &&
+        (p.type === PatternType.TRIPLE ||
+          p.type === PatternType.TRIPLE_SINGLE ||
+          p.type === PatternType.TRIPLE_PAIR ||
+          p.type === PatternType.FOUR_WITH_TWO_SINGLES ||
+          p.type === PatternType.FOUR_WITH_TWO_PAIRS ||
+          p.type === PatternType.BOMB)
+      ) {
+        if (!natVals.has(p.mainValue) && !wildOwnVals.has(p.mainValue)) {
+          return;
+        }
       }
-      const key = `${pattern.type}|${pattern.length}|${pattern.chainCount}|${pattern.mainValue}|${pattern.bombTier ?? 0}`;
+
+      const effectiveTier = p.type === PatternType.BOMB ? tier : p.bombTier;
+      const effectiveLabel =
+        p.type === PatternType.BOMB
+          ? effectiveTier === 3
+            ? '纯赖子炸'
+            : effectiveTier === 1
+              ? '软炸弹'
+              : '硬炸弹'
+          : p.label;
+
+      const built = this.buildClassifiedPattern(
+        p.type,
+        effectiveLabel,
+        p.mainValue,
+        p.length,
+        p.chainCount,
+        sorted,
+        wildRanks,
+        {
+          bombTier: effectiveTier,
+          candidateQuads: p.candidateQuads,
+        }
+      );
+
+      const key = `${built.type}|${built.length}|${built.chainCount}|${built.mainValue}|${built.bombTier ?? 0}`;
       if (seen.has(key)) return;
       seen.add(key);
-      out.push(pattern);
+      out.push(built);
     };
 
     if (wilds.length === 0) {
-      for (const p of this.enumerateNativePatterns(sorted)) push(p, p.bombTier);
+      for (const p of this.enumerateNativePatterns(sorted, wildRanks)) {
+        push(p, p.bombTier);
+      }
+      out.sort((a, b) => this.comparePatternPriority(b, a));
       return out;
     }
     if (wilds.length > this.MAX_WILDS_FOR_ENUMERATION) return out;
+
+    // Also include native non-substituted patterns (e.g. if wild card acts as its own natural rank)
+    for (const p of this.enumerateNativePatterns(sorted, wildRanks)) {
+      const isPureWildBomb = p.type === PatternType.BOMB && wilds.length === 4 && naturals.length === 0;
+      const isHardBomb = p.type === PatternType.BOMB && wilds.length === 0;
+      const tier = isPureWildBomb ? 3 : isHardBomb ? 2 : p.type === PatternType.BOMB ? 1 : p.bombTier;
+      push(p, tier);
+    }
 
     const bombTier = wilds.length === 4 && naturals.length === 0 ? 3 : 1;
     const assigned: number[] = new Array(wilds.length).fill(3);
@@ -1119,8 +1213,8 @@ export class DdzRules {
             rank: VALUE_TO_RANK[assigned[i]],
           })),
         ];
-        for (const p of this.enumerateNativePatterns(this.sortCardsDesc(virtual))) {
-          if (p.type === PatternType.ROCKET) continue; // jokers can never be substituted
+        for (const p of this.enumerateNativePatterns(this.sortCardsDesc(virtual), wildRanks)) {
+          if (p.type === PatternType.ROCKET) continue;
           push(p, p.type === PatternType.BOMB ? bombTier : undefined);
         }
         return;
@@ -1131,11 +1225,18 @@ export class DdzRules {
       }
     };
     rec(0, 3);
+
+    out.sort((a, b) => this.comparePatternPriority(b, a));
     return out;
   }
 
-  /** All native (no substitution) interpretations of a card set - companion of identifyNativePattern. */
-  private static enumerateNativePatterns(sorted: CardData[]): ClassifiedPattern[] {
+  /**
+   * Enumerates all native (no wild substitution) interpretations of `sorted` in Priority Queue order.
+   */
+  private static enumerateNativePatterns(
+    sorted: CardData[],
+    wildRanks: Rank[] = []
+  ): ClassifiedPattern[] {
     const n = sorted.length;
     const res: ClassifiedPattern[] = [];
     if (n === 0) return res;
@@ -1149,9 +1250,12 @@ export class DdzRules {
       chainCount: number,
       extra: Partial<ClassifiedPattern> = {}
     ): void => {
-      res.push({ type, label, mainValue, length: n, chainCount, cards: sorted, ...extra });
+      res.push(
+        this.buildClassifiedPattern(type, label, mainValue, n, chainCount, sorted, wildRanks, extra)
+      );
     };
 
+    // Priority 1: Single / Pair / Rocket / Triple / Bomb
     if (n === 1) mk(PatternType.SINGLE, '单张', sorted[0].value, 1);
     if (n === 2) {
       if (cnt(16) === 1 && cnt(17) === 1) mk(PatternType.ROCKET, '王炸', 17, 1, { bombTier: 4 });
@@ -1171,44 +1275,11 @@ export class DdzRules {
         mk(PatternType.TRIPLE_PAIR, '三带一对', t, 1);
       }
     }
-    // Straight
-    if (n >= 5 && vals.length === n && vals[n - 1] <= 14 && vals[n - 1] - vals[0] === n - 1) {
-      mk(PatternType.STRAIGHT, '顺子', vals[n - 1], n);
-    }
-    // Consecutive pairs
-    if (n >= 6 && n % 2 === 0 && vals.length === n / 2 && vals.every((v) => cnt(v) === 2)) {
-      if (vals[vals.length - 1] <= 14 && vals[vals.length - 1] - vals[0] === vals.length - 1) {
-        mk(PatternType.CONSECUTIVE_PAIRS, '连对', vals[vals.length - 1], vals.length);
-      }
-    }
-    // Four with two singles / two pairs
-    const quads = vals.filter((v) => cnt(v) === 4);
-    if (quads.length > 0 && n === 6 && !(cnt(16) && cnt(17))) {
-      mk(PatternType.FOUR_WITH_TWO_SINGLES, '四带二', quads[quads.length - 1], 1, {
-        candidateQuads: quads,
-      });
-    }
-    if (quads.length > 0 && n === 8) {
-      for (let i = quads.length - 1; i >= 0; i--) {
-        const q = quads[i];
-        let pairs = 0;
-        let ok = true;
-        for (const v of vals) {
-          if (v === q) continue;
-          if (cnt(v) === 2) pairs += 1;
-          else if (cnt(v) === 4) pairs += 2;
-          else ok = false;
-        }
-        if (ok && pairs === 2) {
-          mk(PatternType.FOUR_WITH_TWO_PAIRS, '四带两对', q, 1, { candidateQuads: quads });
-          break;
-        }
-      }
-    }
-    // Airplanes: every run of >=2 consecutive triple-capable ranks (<=A), every chain length
+
+    // Priority 2: Airplanes (evaluated before Four-with-Two so 33334444 prioritizes Airplane with wings)
     const tripleVals = vals.filter((v) => v <= 14 && cnt(v) >= 3);
-    for (let k = 2; k <= tripleVals.length; k++) {
-      for (let s = 0; s + k <= tripleVals.length; s++) {
+    for (let k = tripleVals.length; k >= 2; k--) {
+      for (let s = tripleVals.length - k; s >= 0; s--) {
         const seq = tripleVals.slice(s, s + k);
         if (seq[k - 1] - seq[0] !== k - 1) continue;
         const top = seq[k - 1];
@@ -1232,6 +1303,45 @@ export class DdzRules {
         }
       }
     }
+
+    // Priority 3: Consecutive pairs
+    if (n >= 6 && n % 2 === 0 && vals.length === n / 2 && vals.every((v) => cnt(v) === 2)) {
+      if (vals[vals.length - 1] <= 14 && vals[vals.length - 1] - vals[0] === vals.length - 1) {
+        mk(PatternType.CONSECUTIVE_PAIRS, '连对', vals[vals.length - 1], vals.length);
+      }
+    }
+
+    // Priority 4: Straight
+    if (n >= 5 && vals.length === n && vals[n - 1] <= 14 && vals[n - 1] - vals[0] === n - 1) {
+      mk(PatternType.STRAIGHT, '顺子', vals[n - 1], n);
+    }
+
+    // Priority 5: Four with two singles / two pairs
+    const quads = vals.filter((v) => cnt(v) === 4);
+    if (quads.length > 0 && n === 6 && !(cnt(16) && cnt(17))) {
+      mk(PatternType.FOUR_WITH_TWO_SINGLES, '四带二', quads[quads.length - 1], 1, {
+        candidateQuads: quads,
+      });
+    }
+    if (quads.length > 0 && n === 8) {
+      for (let i = quads.length - 1; i >= 0; i--) {
+        const q = quads[i];
+        let pairs = 0;
+        let ok = true;
+        for (const v of vals) {
+          if (v === q) continue;
+          if (cnt(v) === 2) pairs += 1;
+          else if (cnt(v) === 4) pairs += 2;
+          else ok = false;
+        }
+        if (ok && pairs === 2) {
+          mk(PatternType.FOUR_WITH_TWO_PAIRS, '四带两对', q, 1, { candidateQuads: quads });
+          break;
+        }
+      }
+    }
+
+    res.sort((a, b) => this.comparePatternPriority(b, a));
     return res;
   }
 
@@ -1242,11 +1352,9 @@ export class DdzRules {
   static canBeat(candidate: ClassifiedPattern, target: ClassifiedPattern | null): boolean {
     if (!target) return true;
 
-    // Rocket beats everything
     if (candidate.type === PatternType.ROCKET) return true;
     if (target.type === PatternType.ROCKET) return false;
 
-    // Bomb beats any non-bomb/non-rocket, or smaller bomb according to bombTier then mainValue
     if (candidate.type === PatternType.BOMB) {
       if (target.type !== PatternType.BOMB) return true;
       const candTier = candidate.bombTier ?? 2;
@@ -1257,7 +1365,6 @@ export class DdzRules {
       return candidate.mainValue > target.mainValue;
     }
 
-    // Non-bomb must match exact pattern type and card count
     if (candidate.type !== target.type) return false;
     if (candidate.length !== target.length) return false;
     if (candidate.chainCount !== target.chainCount) return false;
@@ -1270,10 +1377,7 @@ export class DdzRules {
   }
 
   /**
-   * ============================================================================
-   * WHITEPAPER SECTION 2.1 & 2.3:
    * 15-Rank Histogram (`Int32Array(15)`) & Heuristic Zero-Loss Wing Extraction
-   * ============================================================================
    * Index 0..14 maps strictly to values 3..17:
    *   0:'3', 1:'4', 2:'5', 3:'6', 4:'7', 5:'8', 6:'9', 7:'10',
    *   8:'J', 9:'Q', 10:'K', 11:'A', 12:'2', 13:'small_joker', 14:'big_joker'
@@ -1295,20 +1399,15 @@ export class DdzRules {
     return hist;
   }
 
-  /**
-   * Checks if removing `removeCount` cards at `rankIdx` (0..11, i.e., 3..A)
-   * would break an existing 5+ Straight skeleton in `hist`.
-   */
   static wouldBreakStraightSkeleton(
     hist: Int32Array,
     rankIdx: number,
     removeCount: number
   ): boolean {
-    if (rankIdx > 11) return false; // 2 and Jokers never participate in straights
+    if (rankIdx > 11) return false;
     const remaining = hist[rankIdx] - removeCount;
-    if (remaining >= 1) return false; // Still at least 1 card left to sustain any straight!
+    if (remaining >= 1) return false;
 
-    // Check if rankIdx currently bridges or belongs to a contiguous run of length >= 5 in 0..11
     let left = rankIdx;
     while (left - 1 >= 0 && hist[left - 1] >= 1) {
       left--;
@@ -1320,18 +1419,11 @@ export class DdzRules {
     const currentSpan = right - left + 1;
     if (currentSpan < 5) return false;
 
-    // After removal the run splits into [left..rankIdx-1] and [rankIdx+1..right].
-    // The skeleton is only destroyed if NEITHER side still holds a 5+ straight
-    // (trimming the end of a long straight must not count as breaking it).
     const leftSpan = rankIdx - left;
     const rightSpan = right - rankIdx;
     return leftSpan < 5 && rightSpan < 5;
   }
 
-  /**
-   * Checks if removing `removeCount` cards at `rankIdx` (0..11)
-   * would break a 3+ Consecutive Pairs skeleton.
-   */
   static wouldBreakConsecutivePairs(
     hist: Int32Array,
     rankIdx: number,
@@ -1350,17 +1442,11 @@ export class DdzRules {
       right++;
     }
     if (right - left + 1 < 3) return false;
-    // Skeleton survives if either remaining side still holds 3+ consecutive pairs.
     const leftLen = rankIdx - left;
     const rightLen = right - rankIdx;
     return leftLen < 3 && rightLen < 3;
   }
 
-  /**
-   * Compute structural breaking penalty for extracting `needCount` (1 for single wing, 2 for pair wing)
-   * from rank index `idx` (0..14) using the 15-rank histogram.
-   * Lower penalty = cleaner, more isolated kicker.
-   */
   static evaluateWingPenalty(
     hist: Int32Array,
     idx: number,
@@ -1370,12 +1456,10 @@ export class DdzRules {
     const count = hist[idx];
     if (count < needCount) return 999999;
 
-    // Never split Rocket (both small_joker and big_joker held)
     if ((idx === 13 || idx === 14) && hist[13] >= 1 && hist[14] >= 1) {
       return 99999;
     }
 
-    // Never split a 4-of-a-kind Bomb unless required for 4-with-two-pairs or wing fallback
     if (count === 4) {
       if (needCount === 2) {
         return 3200;
@@ -1383,35 +1467,29 @@ export class DdzRules {
       return 5500;
     }
 
-    let penalty = idx * 1.5; // Base preference: smaller rank first among equal structural cost
+    let penalty = idx * 1.5;
 
-    // Avoid wasting Laizi wild cards as ordinary kickers
     if (wildIndices.has(idx)) {
       penalty += 800;
     }
 
-    // High control card penalty (A, 2, Small Joker, Big Joker)
-    if (idx === 14) penalty += 220; // Big Joker
-    else if (idx === 13) penalty += 180; // Small Joker
-    else if (idx === 12) penalty += 120; // '2'
-    else if (idx === 11) penalty += 38;  // 'A'
+    if (idx === 14) penalty += 220;
+    else if (idx === 13) penalty += 180;
+    else if (idx === 12) penalty += 120;
+    else if (idx === 11) penalty += 38;
 
-    // Splitting a Triple (3-of-a-kind) to extract 1 or 2 cards is heavily penalized
     if (count === 3) {
       penalty += 260;
     }
 
-    // Splitting a Pair when we only need 1 Single Wing
     if (count === 2 && needCount === 1) {
       penalty += 55;
     }
 
-    // Breaking a 5+ Straight skeleton
     if (this.wouldBreakStraightSkeleton(hist, idx, needCount)) {
       penalty += 145;
     }
 
-    // Breaking a 3+ Consecutive Pairs skeleton
     if (this.wouldBreakConsecutivePairs(hist, idx, needCount)) {
       penalty += 110;
     }
@@ -1419,12 +1497,6 @@ export class DdzRules {
     return penalty;
   }
 
-  /**
-   * Whitepaper Section 2.3 Heuristic Optimal Wing / Kicker Selector:
-   * Given `allCards`, excludes `excludedCardIds` (the core triple/airplane/quad),
-   * and selects `wingCount` wings of size `wingSize` (1 = single wing, 2 = pair wing)
-   * with minimum structural damage to straights, triples, bombs, and rockets.
-   */
   static selectOptimalWings(
     allCards: CardData[],
     excludedCardIds: Set<string>,
@@ -1441,7 +1513,6 @@ export class DdzRules {
     for (const c of candidatePool) {
       const idx = this.valueToHistIndex(c.value);
       const list = byIdx.get(idx) ?? [];
-      // Prefer non-wild cards first inside the same rank bucket
       if (c.isWild) list.push(c);
       else list.unshift(c);
       byIdx.set(idx, list);
@@ -1453,13 +1524,11 @@ export class DdzRules {
 
     const scoredRanks: Array<{ idx: number; penalty: number }> = [];
     for (let idx = 0; idx < 15; idx++) {
-      // Pair wings cannot use Jokers (idx 13, 14)
       if (wingSize === 2 && idx >= 13) continue;
       if (hist[idx] >= wingSize) {
         const penalty = this.evaluateWingPenalty(hist, idx, wingSize, wildIndices);
         if (penalty < 40000) {
           scoredRanks.push({ idx, penalty });
-          // If we need multiple wings and have multiple units in this rank bucket (non-Joker)
           if (wingCount > 1 && idx < 13) {
             const maxUnits = Math.floor(hist[idx] / wingSize);
             for (let copy = 2; copy <= maxUnits; copy++) {
@@ -1477,7 +1546,6 @@ export class DdzRules {
     }
 
     const chosenRanks = scoredRanks.slice(0, wingCount);
-    // Prevent accidentally picking both Jokers (13 and 14) as two single wings
     if (
       wingSize === 1 &&
       chosenRanks.some((r) => r.idx === 13) &&
@@ -1505,13 +1573,6 @@ export class DdzRules {
     return result;
   }
 
-  /**
-   * Whitepaper v2.0 Section 1.3: Heuristic Optimal 3-Card Swap Selector (换三张启发式选牌算法)
-   * Uses the 15-rank histogram to score each card's structural keep value:
-   * - Never breaks Rockets, 4-of-a-kind Bombs, 2s, Aces, or Triples unless forced
-   * - Protects 5+ Straight skeletons
-   * - Prioritizes isolated low single cards (3~9) first
-   */
   static selectOptimalSwapThree(hand: CardData[]): CardData[] {
     if (hand.length <= 3) return [...hand];
     const hist = this.buildHistogram15(hand);
@@ -1524,14 +1585,14 @@ export class DdzRules {
 
       if (card.isWild) keepScore += 900;
       if ((idx === 13 || idx === 14) && hasRocket) keepScore += 1000;
-      if (idx >= 13) keepScore += 450; // Jokers
-      else if (idx === 12) keepScore += 280; // '2'
-      else if (idx === 11) keepScore += 110; // 'A'
-      else if (idx === 10) keepScore += 55; // 'K'
+      if (idx >= 13) keepScore += 450;
+      else if (idx === 12) keepScore += 280;
+      else if (idx === 11) keepScore += 110;
+      else if (idx === 10) keepScore += 55;
 
-      if (count === 4) keepScore += 800; // Bomb
-      else if (count === 3) keepScore += 240; // Triple
-      else if (count === 2) keepScore += 48; // Pair
+      if (count === 4) keepScore += 800;
+      else if (count === 3) keepScore += 240;
+      else if (count === 2) keepScore += 48;
 
       if (this.wouldBreakStraightSkeleton(hist, idx, 1)) {
         keepScore += 135;
@@ -1547,9 +1608,6 @@ export class DdzRules {
     return scored.slice(0, 3).map((s) => s.card);
   }
 
-  /**
-   * Whitepaper Section 2.6: Room Tier Multiplier Cap Lookup
-   */
   static getMaxMultiplierForBaseScore(baseScore: number): number {
     if (baseScore >= 2000) return 256;
     if (baseScore >= 800) return 128;
@@ -1559,4 +1617,3 @@ export class DdzRules {
     return 32;
   }
 }
-

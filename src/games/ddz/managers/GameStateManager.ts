@@ -1,6 +1,7 @@
 import { soundEngine } from '../../../shared/audio/SoundEngine';
 import { SocketClient } from '../../../shared/network/SocketClient';
 import { GameScene } from '../scenes/GameScene';
+import { DdzDebugLogger } from '../utils/DdzDebugLogger';
 import {
   CardData,
   ChatBubbleInfo,
@@ -329,6 +330,19 @@ export class GameStateManager {
         };
         this.emitState();
 
+        DdzDebugLogger.logDealSnapshot({
+          eventTag: `牌局快照/${snap.phase}`,
+          roomId: snap.roomId,
+          dealMode: nextMode,
+          mySeat: snap.mySeat,
+          landlordSeat: snap.landlordSeat,
+          wildRanks: snap.wildRanks ?? [],
+          myCards: this.cachedMyCards,
+          landlordCards: this.cachedLandlordCards,
+          othersCount: this.cachedOthersCount,
+          cardRecorder: this.state.cardRecorder,
+        });
+
         if (!this.scene) return;
         this.applyBufferedStateToScene();
 
@@ -419,6 +433,19 @@ export class GameStateManager {
         };
         this.emitState();
 
+        DdzDebugLogger.logDealSnapshot({
+          eventTag: '发牌完成',
+          roomId: this.state.roomId,
+          dealMode: this.state.dealMode,
+          mySeat: this.state.mySeat,
+          landlordSeat: null,
+          wildRanks,
+          myCards: this.cachedMyCards,
+          landlordCards: [],
+          othersCount: this.cachedOthersCount,
+          cardRecorder: this.state.cardRecorder,
+        });
+
         soundEngine.playRiffleShuffle();
         if (!this.scene) return;
         this.scene.clearAllPlayedAreas();
@@ -480,14 +507,20 @@ export class GameStateManager {
           this.scene?.showSeatAction(rel, {
             type: data.call ? 'call' : 'no_call',
           });
-          soundEngine.playTap(data.call ? 820 : 480);
-          soundEngine.speak(data.call ? '叫地主' : '不叫', data.call ? 'high' : 'normal');
+          if (data.call) {
+            soundEngine.playPowerChime(2);
+          } else {
+            soundEngine.playTap(480);
+          }
         } else {
           this.scene?.showSeatAction(rel, {
             type: data.call ? 'grab' : 'no_grab',
           });
-          soundEngine.playTap(data.call ? 920 : 480);
-          soundEngine.speak(data.call ? '抢地主' : '不抢', data.call ? 'high' : 'normal');
+          if (data.call) {
+            soundEngine.playPowerChime(3);
+          } else {
+            soundEngine.playTap(480);
+          }
         }
 
         if (data.nextPhase === 'redeal') {
@@ -520,7 +553,20 @@ export class GameStateManager {
         };
         this.emitState();
 
-        soundEngine.playGlissando();
+        DdzDebugLogger.logDealSnapshot({
+          eventTag: `地主确认(Seat#${data.landlordSeat})`,
+          roomId: this.state.roomId,
+          dealMode: this.state.dealMode,
+          mySeat: this.state.mySeat,
+          landlordSeat: data.landlordSeat,
+          wildRanks,
+          myCards: this.cachedMyCards,
+          landlordCards: this.cachedLandlordCards,
+          othersCount: this.cachedOthersCount,
+          cardRecorder: this.state.cardRecorder,
+        });
+
+        soundEngine.playDdzSfx('landlord');
         if (!this.scene) return;
 
         this.scene.clearAllPlayedAreas();
@@ -614,60 +660,116 @@ export class GameStateManager {
         }
 
         const rel = this.getRelativePos(data.seatIndex);
+        const isActorLandlord = data.seatIndex === this.state.landlordSeat;
         if (data.pattern === 'PASS') {
+          DdzDebugLogger.logPlayAction({
+            seatIndex: data.seatIndex,
+            mySeat: this.state.mySeat,
+            isLandlord: isActorLandlord,
+            patternType: 'PASS',
+            patternLabel: '不出',
+            serverMainValue: 0,
+            resolvedMainValue: 0,
+            playedCards: [],
+            orderedCards: [],
+            myRemainingCards: this.cachedMyCards,
+            othersCount: this.cachedOthersCount,
+            cardRecorder: this.state.cardRecorder,
+            wildRanks: this.state.wildRanks,
+          });
           this.scene.showSeatAction(rel, { type: 'pass' });
           soundEngine.playDdzActionVoice('pass');
         } else {
+          const rawCards = (data.cards as CardData[]) || [];
+          const patternType = String(data.pattern);
+          const serverMainVal = Number(data.mainValue) || 0;
+
+          // Resolve authoritative mainValue via server payload + Priority Queue verification
+          let mainVal = serverMainVal;
+          if (!Number.isFinite(mainVal) || mainVal < 3) {
+            const candidates = DdzDebugLogger.evaluatePriorityCandidates(
+              rawCards,
+              this.state.wildRanks
+            );
+            const matched =
+              candidates.find((c) => c.patternType === patternType) ?? candidates[0];
+            if (matched) {
+              mainVal = matched.mainValue;
+            } else {
+              const wildSet = new Set<Rank>(this.state.wildRanks);
+              const nonWildCards = rawCards.filter((c) => !c.isWild && !wildSet.has(c.rank));
+              const sourceCards = nonWildCards.length > 0 ? nonWildCards : rawCards;
+              mainVal = sourceCards[0]?.value ?? 3;
+              if (sourceCards.length > 0) {
+                const counts = new Map<number, number>();
+                for (const c of sourceCards) {
+                  counts.set(c.value, (counts.get(c.value) ?? 0) + 1);
+                }
+                let maxCount = 0;
+                for (const [v, cnt] of counts.entries()) {
+                  if (cnt > maxCount || (cnt === maxCount && v > mainVal)) {
+                    maxCount = cnt;
+                    mainVal = v;
+                  }
+                }
+              }
+            }
+          }
+
+          const orderedCards = DdzDebugLogger.orderCardsForDisplay(
+            rawCards,
+            patternType,
+            mainVal,
+            this.state.wildRanks
+          );
+
+          DdzDebugLogger.logPlayAction({
+            seatIndex: data.seatIndex,
+            mySeat: this.state.mySeat,
+            isLandlord: isActorLandlord,
+            patternType,
+            patternLabel: data.patternLabel,
+            serverMainValue: serverMainVal,
+            resolvedMainValue: mainVal,
+            playedCards: rawCards,
+            orderedCards,
+            myRemainingCards: this.cachedMyCards,
+            othersCount: this.cachedOthersCount,
+            cardRecorder: this.state.cardRecorder,
+            wildRanks: this.state.wildRanks,
+          });
+
           if (rel === 'bottom') {
-            const playedIds = (data.cards as CardData[]).map((c) => c.id);
+            const playedIds = rawCards.map((c) => c.id);
             this.scene.handManager.removeCardsByIds(playedIds);
-          } else {
-            this.syncOpponentCountsFromMap(data.othersCount);
           }
 
           this.scene.showSeatAction(rel, {
             type: 'play',
-            cards: data.cards,
+            cards: orderedCards,
             patternLabel: data.patternLabel,
-            isLandlord: data.seatIndex === this.state.landlordSeat,
+            isLandlord: isActorLandlord,
           });
 
           this.scene.playPatternEffect(data.pattern, data.patternLabel);
 
-          // Authentic sound effect & voice reading with staggered acoustic layering
           const isHeavySpecial = [
             'BOMB',
             'ROCKET',
             'AIRPLANE',
             'AIRPLANE_SINGLE_WINGS',
             'AIRPLANE_PAIR_WINGS',
-          ].includes(String(data.pattern));
+          ].includes(patternType);
 
           if (!isHeavySpecial) {
             soundEngine.playDdzSfx('discard');
           }
 
-          const cards = (data.cards as CardData[]) || [];
-          let mainVal = cards[0]?.value ?? 3;
-          if (cards.length > 0) {
-            const counts = new Map<number, number>();
-            for (const c of cards) counts.set(c.value, (counts.get(c.value) ?? 0) + 1);
-            let maxCount = 0;
-            for (const [v, cnt] of counts.entries()) {
-              if (cnt > maxCount) {
-                maxCount = cnt;
-                mainVal = v;
-              }
-            }
-          }
+          // Play card voice first so any subsequent low-card alert (baojing1/2) queues cleanly behind it
+          soundEngine.playDdzCardVoice(patternType, mainVal);
 
-          if (isHeavySpecial) {
-            soundEngine.playDdzCardVoice(String(data.pattern), mainVal);
-          } else {
-            // 35ms micro-delay lets the crisp table-slap sound lead before speech phonemes start
-            setTimeout(() => {
-              soundEngine.playDdzCardVoice(String(data.pattern), mainVal);
-            }, 35);
+          if (rel !== 'bottom') {
+            this.syncOpponentCountsFromMap(data.othersCount);
           }
         }
       })
@@ -677,11 +779,18 @@ export class GameStateManager {
     this.unsubscribers.push(
       this.socketClient.on('s2c_hint_result', (data) => {
         if (data.noPlayableMove) {
+          console.log('%c[DDZ-DEBUG][智能提示] 当前无大过上家的合法牌组 -> 自动选择不出', 'color:#f87171;font-weight:bold;');
           this.showToast('没有大过上家的牌，已为您选择不出');
           this.passTurn();
           return;
         }
-        const ids = (data.cards as CardData[]).map((c) => c.id);
+        const hintCards = (data.cards as CardData[]) || [];
+        const cands = DdzDebugLogger.evaluatePriorityCandidates(hintCards, this.state.wildRanks);
+        console.log(
+          `%c[DDZ-DEBUG][智能提示] 推荐提牌: ${DdzDebugLogger.formatCards(hintCards)} | 判定牌型: ${cands[0]?.label ?? '组合'}`,
+          'color:#38bdf8;font-weight:bold;'
+        );
+        const ids = hintCards.map((c) => c.id);
         this.scene?.handManager.selectByIds(ids);
       })
     );

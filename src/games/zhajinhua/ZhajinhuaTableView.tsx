@@ -164,67 +164,72 @@ export const ZhajinhuaTableView: React.FC<ZhajinhuaTableViewProps> = ({
           >
             {/* Felt */}
             <div
-              className="absolute left-1/2 top-[40px] -translate-x-1/2 rounded-[170px] border-[6px] border-[#cda761] shadow-[inset_0_0_80px_rgba(0,0,0,0.65),0_20px_60px_rgba(0,0,0,0.6)]"
+              className="absolute left-1/2 top-[40px] -translate-x-1/2 rounded-[170px] border-[7px] border-[#cda761] shadow-[inset_0_0_80px_rgba(0,0,0,0.75),0_20px_60px_rgba(0,0,0,0.7)]"
               style={{
                 width: virtualWidth - 80,
-                height: 612,
-                background: 'radial-gradient(ellipse at center, #185e3a 0%, #0d4026 55%, #062415 100%)',
+                height: 616,
+                background: 'radial-gradient(ellipse at center, #19633e 0%, #0e4228 55%, #062415 100%)',
               }}
-            />
-            <div className="pointer-events-none absolute left-1/2 top-[300px] -translate-x-1/2 -translate-y-1/2 text-[64px] font-black tracking-[0.5em] text-white/[0.05]">
-              炸金花
+            >
+              <div className="pointer-events-none absolute inset-4 rounded-[152px] border border-[#d8b872]/25" />
+            </div>
+            <div className="pointer-events-none absolute left-1/2 top-[300px] -translate-x-1/2 -translate-y-1/2 font-display text-5xl font-black tracking-widest text-[#d8b872]/10">
+              {modeLabel}
             </div>
 
             {/* Header */}
             <div className="absolute left-6 right-6 top-3 z-30 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={onLeaveRoom}
-                className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 hover:bg-black/80"
-                aria-label="退出房间"
-              >
-                <ArrowLeft size={18} />
-              </button>
-              <div className="flex items-center gap-3 rounded-full border border-amber-400/30 bg-black/60 px-4 py-1.5 text-xs font-bold text-amber-200">
-                <span>炸金花</span>
-                <span className="text-white/40">|</span>
-                <span>底注 {snapshot ? formatZjhBeans(snapshot.baseScore) : '-'}</span>
-                <span className="text-white/40">|</span>
-                <span>{modeLabel}</span>
-                {snapshot?.phase === 'BETTING' && (
-                  <>
-                    <span className="text-white/40">|</span>
-                    <span>
-                      第 {snapshot.round}/{snapshot.maxRounds} 轮
-                    </span>
-                  </>
-                )}
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={onLeaveRoom}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-white shadow-md hover:border-amber-300 hover:bg-black/80 active:scale-95 cursor-pointer"
+                  aria-label="退出房间"
+                >
+                  <ArrowLeft size={18} />
+                </button>
+                <div className="flex items-center gap-2 rounded-full border border-amber-300/30 bg-black/60 px-3.5 py-1.5 text-xs font-bold text-amber-100 backdrop-blur-xs">
+                  <span className="text-amber-300">{modeLabel}</span>
+                  <span className="text-white/30">·</span>
+                  <span className="font-mono text-amber-200">
+                    底注 {snapshot ? formatZjhBeans(snapshot.baseScore) : '-'}
+                  </span>
+                  {snapshot?.phase === 'BETTING' && (
+                    <>
+                      <span className="text-white/30">·</span>
+                      <span className="font-mono text-white/85">
+                        第 {snapshot.round}/{snapshot.maxRounds} 轮
+                      </span>
+                    </>
+                  )}
+                </div>
               </div>
+
               <div className="flex items-center gap-2">
                 <button
                   type="button"
                   onClick={toggleSound}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 hover:bg-black/80"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-white shadow-md hover:bg-black/80 active:scale-95 cursor-pointer"
                   aria-label="声音"
                 >
-                  {soundOn ? <Volume2 size={17} /> : <VolumeX size={17} />}
+                  {soundOn ? <Volume2 size={16} className="text-amber-300" /> : <VolumeX size={16} className="text-rose-400" />}
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowRules(true)}
-                  className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 hover:bg-black/80"
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-amber-200 shadow-md hover:bg-black/80 active:scale-95 cursor-pointer"
                   aria-label="规则"
                 >
-                  <HelpCircle size={17} />
+                  <HelpCircle size={16} />
                 </button>
                 {onToggleFullscreen && (
                   <button
                     type="button"
                     onClick={onToggleFullscreen}
-                    className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-black/60 hover:bg-black/80"
+                    className="flex h-9 w-9 items-center justify-center rounded-full border border-amber-200/30 bg-black/60 text-white shadow-md hover:bg-black/80 active:scale-95 cursor-pointer"
                     aria-label="全屏"
                   >
-                    {isFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+                    {isFullscreen ? <Minimize2 size={16} className="text-amber-300" /> : <Maximize2 size={16} />}
                   </button>
                 )}
               </div>
@@ -238,20 +243,15 @@ export const ZhajinhuaTableView: React.FC<ZhajinhuaTableViewProps> = ({
 
             {/* Pot */}
             {snapshot && (
-              <div className="absolute left-1/2 top-[258px] z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-2">
-                <div className="flex items-center gap-2 rounded-full border border-amber-300/50 bg-black/65 px-6 py-2 shadow-[0_0_24px_rgba(251,191,36,0.25)]">
-                  <span className="inline-block h-5 w-5 rounded-full border-2 border-amber-100 bg-gradient-to-b from-amber-300 to-amber-600" />
-                  <span className="text-xs font-bold text-amber-200/80">底池</span>
-                  <span className="font-mono text-2xl font-black text-amber-300">{formatZjhBeans(snapshot.pot)}</span>
+              <div className="absolute left-1/2 top-[256px] z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-1.5">
+                <div className="flex items-center gap-2 rounded-full border border-amber-300/45 bg-black/60 px-5 py-1.5 shadow-[0_0_20px_rgba(251,191,36,0.2)]">
+                  <span className="inline-block h-4 w-4 rounded-full border-2 border-amber-100 bg-gradient-to-b from-amber-300 to-amber-600" />
+                  <span className="text-xs font-bold text-amber-200/85">底池</span>
+                  <span className="font-mono text-xl font-black text-amber-300">{formatZjhBeans(snapshot.pot)}</span>
                 </div>
                 {snapshot.phase === 'BETTING' && (
-                  <div className="rounded-full bg-black/55 px-3 py-0.5 text-[11px] font-bold text-white/75">
-                    当前注 {formatZjhBeans(snapshot.stake)}（看牌 ×2）
-                  </div>
-                )}
-                {snapshot.message && (
-                  <div className="max-w-[420px] truncate rounded-full bg-black/45 px-4 py-0.5 text-xs font-semibold text-emerald-100/90">
-                    {snapshot.message}
+                  <div className="rounded-full bg-black/50 px-3 py-0.5 font-mono text-[11px] font-bold text-amber-100/85">
+                    单注 {formatZjhBeans(snapshot.stake)}
                   </div>
                 )}
               </div>

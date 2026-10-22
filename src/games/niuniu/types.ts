@@ -1,5 +1,7 @@
 export type NiuniuSuit = 'spade' | 'heart' | 'club' | 'diamond';
 
+export type NiuniuPlayMode = 'qiangzhuang' | 'tongbi' | 'crazy';
+
 export interface NiuniuCard {
   id: number; // 0..51
   suit: NiuniuSuit;
@@ -37,15 +39,26 @@ export interface NiuniuHandResult {
   maxCard: NiuniuCard; // 牌面最大单张（用于同等级比牌）
 }
 
+export interface FourCardOddsAnalysis {
+  niuProb: number; // 成牛概率 (0..100)
+  highNiuProb: number; // 牛七及以上高倍概率 (0..100)
+  niuNiuPlusProb: number; // 牛牛及特殊牌型概率 (0..100)
+  expectedLevel: number; // 期望牌型等级
+  expectedMultiplier: number; // 期望牌型倍数
+  bestPossibleName: string; // 第5张可成最大牌型
+  recommendedCall: number; // 推荐抢庄倍数 (0/1/2/3/4)
+  recommendedBet: number; // 推荐闲家下注倍数 (5/10/15/20)
+}
+
 export type NiuniuPhase =
   | 'WAITING' // 等待准备 / 补齐玩家
-  | 'DEAL_FIRST_4' // 发前4张手牌
+  | 'DEAL_FIRST_4' // 发前4张手牌 (看牌抢庄4明1暗)
   | 'CALL_BANKER' // 抢庄阶段 (不抢/1/2/3/4倍)
   | 'DETERMINE_BANKER' // 光圈闪烁定庄
   | 'BETTING' // 闲家下注加倍阶段 (5/10/15/20倍)
   | 'DEAL_5TH' // 发第5张牌
-  | 'SHOWDOWN' // 算牛 / 摊牌阶段
-  | 'COMPARE_AND_SETTLE' // 比牌与筹码飞行动画
+  | 'SHOWDOWN' // 算牛 / 摊牌阶段 (3+2凑十算牛)
+  | 'COMPARE_AND_SETTLE' // 比牌与筹码飞行结算动画
   | 'ROUND_RESULT'; // 本局结算面板
 
 export interface NiuniuPlayerInfo {
@@ -69,7 +82,7 @@ export interface NiuniuPlayerInfo {
 export interface NiuniuTableSnapshot {
   roomId: string;
   baseScore: number;
-  playMode: 'qiangzhuang' | 'tongbi' | 'crazy';
+  playMode: NiuniuPlayMode;
   phase: NiuniuPhase;
   countdown: number;
   dealerSeatId: number;
@@ -82,9 +95,13 @@ export interface NiuniuPlayerSettlement {
   seatIndex: number;
   playerId: string;
   nickname: string;
+  avatarId?: string;
   isDealer: boolean;
+  callMultiplier?: number;
+  betMultiplier?: number;
   handType: NiuniuHandType;
   handName: string;
+  handMultiplier: number;
   cards: NiuniuCard[];
   scoreDelta: number;
   balance: number;
@@ -93,6 +110,7 @@ export interface NiuniuPlayerSettlement {
 
 export interface NiuniuSettlement {
   baseScore: number;
+  playMode?: NiuniuPlayMode;
   dealerSeatIndex: number;
   players: NiuniuPlayerSettlement[];
 }
@@ -104,11 +122,14 @@ export interface NiuniuTierConfig {
   minBeans: number;
   capLabel: string;
   onlineBase: number;
+  emblemIcon: string;
+  bgTexture: string;
   theme: {
     bgGradient: string;
     borderColor: string;
     glowColor: string;
     titleColor: string;
+    titleStroke: string;
     titleShadow: string;
     pillBg: string;
     ribbonBg: string;

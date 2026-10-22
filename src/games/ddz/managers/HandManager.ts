@@ -139,35 +139,53 @@ export class HandManager {
     this.comboStatusBadge.addChild(this.comboStatusBg, this.comboStatusText);
   }
 
+  private comboHideTimer: number | null = null;
+
   private showComboStatusBanner(text: string, isPreview = false): void {
     if (this.container.destroyed || this.comboStatusBadge.destroyed) return;
+    if (this.comboHideTimer !== null) {
+      window.clearTimeout(this.comboHideTimer);
+      this.comboHideTimer = null;
+    }
+
     this.comboStatusText.text = text;
-    const width = Math.max(210, this.comboStatusText.width + 36);
+    const width = Math.max(196, this.comboStatusText.width + 32);
     this.comboStatusBg.clear();
-    this.comboStatusBg.roundRect(-width / 2, -16, width, 32, 16);
+    this.comboStatusBg.roundRect(-width / 2, -14, width, 28, 14);
     this.comboStatusBg.fill({
-      color: isPreview ? 0x0f172a : 0x064e3b,
-      alpha: 0.94,
+      color: isPreview ? 0x0f172a : 0x05281c,
+      alpha: 0.92,
     });
     this.comboStatusBg.stroke({
       color: isPreview ? 0x38bdf8 : 0xf59e0b,
-      width: 2,
+      width: 1.5,
     });
 
     if (!this.comboStatusBadge.visible) {
       this.comboStatusBadge.visible = true;
-      this.comboStatusBadge.scale.set(0.85);
+      this.comboStatusBadge.scale.set(0.88);
       gsap.killTweensOf(this.comboStatusBadge.scale);
       gsap.to(this.comboStatusBadge.scale, {
         x: 1,
         y: 1,
-        duration: 0.18,
-        ease: 'back.out(1.7)',
+        duration: 0.16,
+        ease: 'back.out(1.6)',
       });
+    }
+
+    if (!isPreview) {
+      this.comboHideTimer = window.setTimeout(() => {
+        this.comboHideTimer = null;
+        this.hideComboStatusBanner();
+      }, 1500);
     }
   }
 
   private hideComboStatusBanner(): void {
+    if (this.comboHideTimer !== null) {
+      window.clearTimeout(this.comboHideTimer);
+      this.comboHideTimer = null;
+    }
     if (this.comboStatusBadge && !this.comboStatusBadge.destroyed) {
       gsap.killTweensOf(this.comboStatusBadge.scale);
       this.comboStatusBadge.visible = false;
@@ -626,28 +644,16 @@ export class HandManager {
   }
 
   /**
-   * Core Commercial Smart Pattern Extractor with Laizi Gap-Bridging:
-   * Automatically identifies Airplanes (飞机), Consecutive Pairs (连对), or Straights (顺子)
-   * from the dragged card range, using any dragged wild cards to bridge single-rank gaps.
+   * Core Commercial Smart Pattern Extractor with Priority Queue & Laizi Gap-Bridging:
+   * Evaluates strictly within `slicedCards` (never reaching outside the user's dragged range)
+   * and applies Priority Queue disambiguation:
+   *   1. Airplane (飞机: >= 2 consecutive triples, value <= 14)
+   *   2. Consecutive Pairs (连对: >= 3 consecutive pairs, only when all dragged ranks in run have >= 2 cards)
+   *   3. Straight (顺子: >= 5 consecutive singles, value <= 14)
+   *   4. Laizi Wild-Bridged Straight (赖子顺子)
    */
   public extractSmartCombo(slicedCards: Card[]): ExtractedComboResult | null {
     if (slicedCards.length < 3) return null;
-
-    const minSliceVal = Math.min(...slicedCards.map((c) => c.cardData.value));
-    const maxSliceVal = Math.max(...slicedCards.map((c) => c.cardData.value));
-
-    const sliceIdSet = new Set(slicedCards.map((c) => c.cardData.id));
-    const expandedPool: Card[] = [...slicedCards];
-
-    for (const c of this.cards) {
-      if (sliceIdSet.has(c.cardData.id)) continue;
-      if (
-        c.cardData.value <= 14 &&
-        (c.cardData.value === minSliceVal || c.cardData.value === maxSliceVal)
-      ) {
-        expandedPool.push(c);
-      }
-    }
 
     const sliceValMap = new Map<number, Card[]>();
     for (const c of slicedCards) {
@@ -658,27 +664,18 @@ export class HandManager {
       sliceValMap.set(v, arr);
     }
 
-    const expandedValMap = new Map<number, Card[]>();
-    for (const c of expandedPool) {
-      const v = c.cardData.value;
-      if (v > 14) continue;
-      const arr = expandedValMap.get(v) ?? [];
-      arr.push(c);
-      expandedValMap.set(v, arr);
-    }
-
     const distinctAsc = Array.from(sliceValMap.keys()).sort((a, b) => a - b);
     if (distinctAsc.length < 2) return null;
 
-    // 1. Check for Airplane (飞机: >= 2 consecutive triples, value <= 14)
+    // Priority 1: Airplane (飞机: >= 2 consecutive triples, value <= 14)
     const tripleVals = distinctAsc.filter(
-      (v) => (expandedValMap.get(v)?.length ?? 0) >= 3
+      (v) => (sliceValMap.get(v)?.length ?? 0) >= 3
     );
     const longestTripleRun = this.findLongestContiguousRun(tripleVals);
-    if (longestTripleRun.length >= 2 && slicedCards.length >= 4) {
+    if (longestTripleRun.length >= 2 && slicedCards.length >= 6) {
       const ids = new Set<string>();
       for (const v of longestTripleRun) {
-        const grp = expandedValMap.get(v)!;
+        const grp = sliceValMap.get(v)!;
         ids.add(grp[0].cardData.id);
         ids.add(grp[1].cardData.id);
         ids.add(grp[2].cardData.id);
@@ -731,21 +728,22 @@ export class HandManager {
       };
     }
 
-    // 2. Check for Consecutive Pairs (连对: >= 3 consecutive pairs, value <= 14)
+    // Priority 2: Consecutive Pairs (连对: >= 3 consecutive pairs, value <= 14)
     const pairVals = distinctAsc.filter(
-      (v) => (expandedValMap.get(v)?.length ?? 0) >= 2
+      (v) => (sliceValMap.get(v)?.length ?? 0) >= 2
     );
     const longestPairRun = this.findLongestContiguousRun(pairVals);
     const longestStraightRun = this.findLongestContiguousRun(distinctAsc);
 
+    // Prefer Consecutive Pairs when all dragged ranks form pairs OR when straight run < 5
+    const allDraggedRanksArePairs = longestPairRun.length === distinctAsc.length;
     if (
       longestPairRun.length >= 3 &&
-      (longestStraightRun.length < 5 ||
-        longestPairRun.length * 2 >= slicedCards.length - 2)
+      (longestStraightRun.length < 5 || allDraggedRanksArePairs)
     ) {
       const ids = new Set<string>();
       for (const v of longestPairRun) {
-        const grp = expandedValMap.get(v)!;
+        const grp = sliceValMap.get(v)!;
         ids.add(grp[0].cardData.id);
         ids.add(grp[1].cardData.id);
       }
@@ -762,7 +760,7 @@ export class HandManager {
       };
     }
 
-    // 3. Check for Straight (顺子: >= 5 consecutive singles, value <= 14)
+    // Priority 3: Straight (顺子: >= 5 consecutive singles, value <= 14)
     if (longestStraightRun.length >= 5) {
       const ids = new Set<string>();
       for (const v of longestStraightRun) {
@@ -782,7 +780,7 @@ export class HandManager {
       };
     }
 
-    // 4. Laizi Wild-Bridged Straight (when user drags across 4+ naturals + 1~2 wild cards)
+    // Priority 4: Laizi Wild-Bridged Straight (when user drags across 4+ naturals + 1~2 wild cards)
     const draggedWilds = slicedCards.filter((c) => Boolean(c.cardData.isWild));
     if (draggedWilds.length >= 1 && slicedCards.length >= 5) {
       const nonWildMap = new Map<number, Card[]>();
@@ -881,7 +879,11 @@ export class HandManager {
     const slicedCards = this.cards.slice(minIdx, maxIdx + 1).filter((c) => !c.destroyed);
     if (slicedCards.length === 0) return;
 
-    if (slicedCards.length >= 3) {
+    const hasOutsideSelection = this.cards.some(
+      (c, idx) => !c.destroyed && c.selected && (idx < minIdx || idx > maxIdx)
+    );
+
+    if (slicedCards.length >= 5 && !hasOutsideSelection) {
       const smartCombo = this.extractSmartCombo(slicedCards);
       if (smartCombo && smartCombo.ids.size > 0) {
         const comboValues = new Set(

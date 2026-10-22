@@ -16,8 +16,8 @@ const BOT_PROFILES = [
 ];
 
 const TURN_DURATION_MS = 18000;
-const BOT_THINK_DELAY_MS = 900;
-const TRUSTEESHIP_DELAY_MS = 1050;
+const BOT_THINK_DELAY_MS = 1250;
+const TRUSTEESHIP_DELAY_MS = 1250;
 const SETTLEMENT_AUTO_START_DELAY_MS = 6000;
 
 export class DdzRoom implements IGameRoom {
@@ -361,6 +361,18 @@ export class DdzRoom implements IGameRoom {
     }
     this.stateMachine.startDealing(this.dealMode);
 
+    console.log(
+      `[DDZ-SERVER-DEBUG][发牌] 房间:${this.roomId} | 模式:${this.dealMode} | 赖子:${JSON.stringify(this.stateMachine.wildRanks)} | 底牌:${DdzRules.formatCards(this.stateMachine.landlordCards)}`
+    );
+    for (let s = 0; s < 3; s++) {
+      const hand = this.stateMachine.hands.get(s) ?? [];
+      const part = DdzBotEngine.partitionHand(hand, this.stateMachine.wildRanks);
+      console.log(
+        `  ├─ Seat#${s} (${this.seats[s]?.nickname ?? 'Empty'}) 初始手牌(${hand.length}张): ${DdzRules.formatCards(hand)} | 拆牌:`,
+        DdzBotEngine.formatPartitionSummary(part)
+      );
+    }
+
     this.broadcastRoomState();
 
     for (let seat = 0; seat < 3; seat++) {
@@ -619,15 +631,6 @@ export class DdzRoom implements IGameRoom {
       nextPhase: res.nextPhase,
     });
 
-    if (seatPlayer.isBot && factor === 4) {
-      this.broadcastToRoom('s2c_chat_message', {
-        playerId: seatPlayer.playerId,
-        seatIndex: seat,
-        nickname: seatPlayer.nickname,
-        text: '这把牌气势如虹，超级加倍！',
-      });
-    }
-
     this.broadcastRoomState();
     this.advanceTurnTimer();
   }
@@ -648,6 +651,17 @@ export class DdzRoom implements IGameRoom {
     this.hintCursorMap.delete(seatPlayer.playerId);
 
     const remainingMyCards = this.stateMachine.hands.get(seat) ?? [];
+    const roleLabel = seat === this.stateMachine.landlordSeat ? '地主' : '农民';
+    if (res.pattern) {
+      const voiceFile = DdzRules.resolveVoiceFile(res.pattern.type, res.pattern.mainValue);
+      console.log(
+        `[DDZ-SERVER-DEBUG][出牌/读牌] 房间:${this.roomId} | Seat#${seat}(${seatPlayer.nickname}/${roleLabel}) -> ${res.pattern.label}(${res.pattern.type}, 主牌值=${res.pattern.mainValue}[${DdzRules.valueToLabel(res.pattern.mainValue)}], 优先级=${res.pattern.priority ?? 0}, 音频=${voiceFile}) | 出牌:${DdzRules.formatCards(res.pattern.cards)} | 剩余(${remainingMyCards.length}张):${DdzRules.formatCards(remainingMyCards)}`
+      );
+    } else {
+      console.log(
+        `[DDZ-SERVER-DEBUG][不出] 房间:${this.roomId} | Seat#${seat}(${seatPlayer.nickname}/${roleLabel}) -> 不出(PASS) | 剩余(${remainingMyCards.length}张):${DdzRules.formatCards(remainingMyCards)}`
+      );
+    }
 
     for (let viewerSeat = 0; viewerSeat < 3; viewerSeat++) {
       const viewer = this.seats[viewerSeat];
@@ -668,6 +682,7 @@ export class DdzRoom implements IGameRoom {
         cards: res.pattern ? res.pattern.cards : [],
         pattern: res.pattern ? res.pattern.type : 'PASS',
         patternLabel: res.pattern ? res.pattern.label : '不出',
+        mainValue: res.pattern ? res.pattern.mainValue : 0,
         multiplier: this.stateMachine.totalMultiplier,
         wildRanks: this.stateMachine.wildRanks,
         remainingCount: remainingMyCards.length,
@@ -675,19 +690,6 @@ export class DdzRoom implements IGameRoom {
         othersCount,
         cardRecorder: this.stateMachine.getRemainingRankCountsForSeat(viewerSeat),
         isNewTrick: this.stateMachine.lastPlayed === null,
-      });
-    }
-
-    if (
-      seatPlayer.isBot &&
-      res.pattern &&
-      (res.pattern.type === 'BOMB' || res.pattern.type === 'ROCKET')
-    ) {
-      this.broadcastToRoom('s2c_chat_message', {
-        playerId: seatPlayer.playerId,
-        seatIndex: seat,
-        nickname: seatPlayer.nickname,
-        text: '炸弹来袭，小心了！',
       });
     }
 

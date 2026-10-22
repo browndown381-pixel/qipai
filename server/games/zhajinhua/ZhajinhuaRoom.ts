@@ -27,6 +27,7 @@ import {
   type ZjhSeatStatus,
   type ZjhSnapshot,
 } from '../../../src/games/zhajinhua/types.js';
+import { ZjhDebugLogger } from '../../../src/games/zhajinhua/utils/ZjhDebugLogger.js';
 import { randomPersonality, ZjhBotEngine, type ZjhBotPersonality } from './ZjhBotEngine.js';
 
 const BOT_PROFILES = [
@@ -136,9 +137,18 @@ export class ZhajinhuaRoom implements IGameRoom {
     this.hostId = options.hostId;
     this.baseScore = options.baseScore;
     this.isPrivate = options.isPrivate;
-    this.playMode = options.mode === 'special' ? 'special' : 'classic';
+    this.playMode =
+      options.mode === 'special' || options.mode === 'bloody' || options.mode === 'quick'
+        ? options.mode
+        : 'classic';
     this.connectionManager = options.connectionManager;
     this.onRoomDestroyed = options.onRoomDestroyed;
+  }
+
+  private get maxRounds(): number {
+    if (this.playMode === 'bloody') return 15;
+    if (this.playMode === 'quick') return 8;
+    return ZJH_MAX_ROUNDS;
   }
 
   get mode(): string {
@@ -501,10 +511,14 @@ export class ZhajinhuaRoom implements IGameRoom {
 
     const options = this.optionsFor(idx);
     const payload = ZjhBotEngine.decide({
+      seatIndex: idx,
+      nickname: seat.nickname,
+      mode: this.playMode,
+      pot: this.pot(),
       cards: this.state[idx].cards,
       seen: this.state[idx].seen,
       round: this.round,
-      maxRounds: ZJH_MAX_ROUNDS,
+      maxRounds: this.maxRounds,
       stakeLevel: this.stakeLevel,
       activeCount: this.liveSeats().length,
       beans: seat.beans,
@@ -561,7 +575,11 @@ export class ZhajinhuaRoom implements IGameRoom {
       callCost: call,
       raiseOptions: inTurn ? raiseOptions(ctx).filter((o) => o.cost <= seat.beans) : [],
       compareCost: cmp,
-      canCompare: inTurn && canCompareNow(this.round, live.length) && seat.beans >= cmp && targets.length > 0,
+      canCompare:
+        inTurn &&
+        canCompareNow(this.round, live.length, this.playMode) &&
+        seat.beans >= cmp &&
+        targets.length > 0,
       compareTargets: inTurn ? targets : [],
       canAllIn: mustAllIn,
       mustAllIn,
@@ -673,6 +691,16 @@ export class ZhajinhuaRoom implements IGameRoom {
       loserSeat: loser,
       tie: result === 0,
     };
+    ZjhDebugLogger.logCompareDuel(
+      from,
+      this.seats[from]?.nickname ?? `#${from}`,
+      a.cards,
+      to,
+      this.seats[to]?.nickname ?? `#${to}`,
+      b.cards,
+      loser,
+      this.playMode,
+    );
     this.message = `${this.seats[from]!.nickname} 比牌 ${this.seats[to]!.nickname}，${this.seats[loser]!.nickname} 出局`;
   }
 
@@ -717,8 +745,8 @@ export class ZhajinhuaRoom implements IGameRoom {
     if (live.every((s) => this.acted.has(s))) {
       this.round += 1;
       this.acted.clear();
-      if (this.round > ZJH_MAX_ROUNDS) {
-        this.message = `已达 ${ZJH_MAX_ROUNDS} 轮封顶，直接开牌`;
+      if (this.round > this.maxRounds) {
+        this.message = `已达 ${this.maxRounds} 轮封顶，直接开牌`;
         this.startShowdown();
         return;
       }
@@ -781,6 +809,7 @@ export class ZhajinhuaRoom implements IGameRoom {
     for (let step = 1; step <= ZJH_MAX_SEATS; step++) order.push((this.dealerSeat + step) % ZJH_MAX_SEATS);
 
     const result = resolveShowdown(contenders, this.playMode, order);
+    ZjhDebugLogger.logShowdownResult(this.roomId, this.playMode, contenders, result);
     const names = result.winners.map((w) => this.seats[w]?.nickname ?? '').join('、');
     const top = result.winners[0];
     const label = top !== undefined ? evaluateHand(this.state[top].cards).label : '';
@@ -860,7 +889,7 @@ export class ZhajinhuaRoom implements IGameRoom {
       mode: this.playMode,
       baseScore: this.baseScore,
       round: this.round,
-      maxRounds: ZJH_MAX_ROUNDS,
+      maxRounds: this.maxRounds,
       pot: this.pot(),
       stake: stakeOf(this.baseScore, this.stakeLevel),
       stakeLevel: Math.min(this.stakeLevel, ZJH_STAKE_LEVELS.length - 1),

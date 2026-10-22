@@ -11,11 +11,13 @@ import {
   NiuniuTableSnapshot,
 } from '../../../src/games/niuniu/types.js';
 import {
+  analyzeFourCardOdds,
   compareHands,
   createStandardNiuniuDeck,
   evaluateNiuniuHand,
   shuffleDeck,
 } from '../../../src/games/niuniu/algorithms/NiuniuLogic.js';
+import { NiuniuDebugLogger } from '../../../src/games/niuniu/utils/NiuniuDebugLogger.js';
 import { NiuniuBotEngine } from './NiuniuBotEngine.js';
 
 const BOT_PROFILES = [
@@ -79,7 +81,7 @@ export class NiuniuRoom implements IGameRoom {
     this.baseScore = options.baseScore;
     this.isPrivate = options.isPrivate;
     this.playMode =
-      options.mode === 'tongbi' || options.mode === 'crazy'
+      options.mode === 'tongbi' || options.mode === 'crazy' || options.mode === 'classic'
         ? options.mode
         : 'qiangzhuang';
     this.connectionManager = options.connectionManager;
@@ -348,8 +350,18 @@ export class NiuniuRoom implements IGameRoom {
     this.countdown = 6;
     this.broadcastSnapshot();
 
-    // Trigger AI bots to call banker using exact 48-card EV solver
+    // Trigger AI bots to call banker using exact 48-card EV solver & log 4-card odds
     this.seats.forEach((seat, idx) => {
+      if (seat && this.hands[idx].length >= 4) {
+        const odds = analyzeFourCardOdds(this.hands[idx].slice(0, 4), this.playMode);
+        NiuniuDebugLogger.logFourCardOdds(
+          idx,
+          seat.nickname,
+          this.hands[idx].slice(0, 4),
+          odds,
+          this.playMode
+        );
+      }
       if (seat && seat.isBot && this.callMultipliers[idx] === -1) {
         const delay = 600 + Math.random() * 1100;
         const timer = setTimeout(() => {
@@ -504,7 +516,15 @@ export class NiuniuRoom implements IGameRoom {
 
     this.seats.forEach((seat, idx) => {
       if (seat && this.hands[idx].length === 5) {
-        this.handResults[idx] = evaluateNiuniuHand(this.hands[idx], this.playMode);
+        const res = evaluateNiuniuHand(this.hands[idx], this.playMode);
+        this.handResults[idx] = res;
+        NiuniuDebugLogger.logHandEvaluation(
+          idx,
+          seat.nickname,
+          this.hands[idx],
+          res,
+          this.playMode
+        );
       }
     });
 
@@ -704,6 +724,13 @@ export class NiuniuRoom implements IGameRoom {
         })
         .filter(Boolean),
     };
+
+    NiuniuDebugLogger.logRoundSettlement(
+      this.roomId,
+      this.playMode,
+      dealerIdx,
+      this.currentSettlement
+    );
 
     this.broadcastSnapshot();
 

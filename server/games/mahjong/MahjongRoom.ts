@@ -26,6 +26,7 @@ import {
   evaluateHu,
 } from '../../../src/games/mahjong/algorithms/MahjongRules.js';
 import { MahjongBotEngine } from './MahjongBotEngine.js';
+import { MahjongDebugLogger } from '../../../src/games/mahjong/utils/MahjongDebugLogger.js';
 
 const BOT_PROFILES = [
   { nickname: '雀圣·陆九渊AI', avatarId: 'kashen' },
@@ -230,10 +231,26 @@ export class MahjongRoom implements IGameRoom {
 
     // Deal 13 cards to each player
     for (let seat = 0; seat < 4; seat++) {
-      this.hands[seat] = sortTiles(this.deck.splice(0, 13));
+      this.hands[seat] = sortTiles(this.deck.splice(0, 13), this.playMode);
     }
     this.dealerSeatId = 0;
     this.currentTurnSeatId = 0;
+
+    MahjongDebugLogger.logDealSnapshot({
+      roomId: this.roomId,
+      mode: this.playMode,
+      dealerSeat: this.dealerSeatId,
+      wallRemaining: this.deck.length,
+      seats: this.seats.map((s, idx) => ({
+        seat: idx,
+        name: s?.nickname || `座位${idx}`,
+        isBot: s?.isBot,
+        hand: this.hands[idx],
+        melds: this.melds[idx],
+        discards: this.discards[idx],
+      })),
+      source: 'SERVER',
+    });
 
     this.broadcastSnapshot();
 
@@ -248,7 +265,7 @@ export class MahjongRoom implements IGameRoom {
         for (let s = 0; s < 4; s++) {
           const player = this.seats[s];
           if (player?.isBot) {
-            this.dingQueSuits[s] = MahjongBotEngine.decideDingQue(this.hands[s]);
+            this.dingQueSuits[s] = MahjongBotEngine.decideDingQue(this.hands[s], this.playMode);
           }
         }
 
@@ -343,6 +360,25 @@ export class MahjongRoom implements IGameRoom {
     this.broadcastSnapshot();
 
     const player = this.seats[seatId];
+    const visibleTiles = [
+      ...this.discards.flat(),
+      ...this.melds.flatMap((mList) => mList.flatMap((m) => m.tiles || [])),
+    ];
+    const lackMap: Record<number, 'wan' | 'tiao' | 'tong'> = { 0: 'wan', 1: 'tiao', 2: 'tong' };
+    MahjongDebugLogger.logTurnAnalysis({
+      seat: seatId,
+      playerName: player?.nickname || `座位${seatId}`,
+      mode: this.playMode,
+      drawnTile: drawn,
+      hand,
+      melds: this.melds[seatId],
+      visibleTiles,
+      lackSuit: dingQue !== null && dingQue !== undefined ? lackMap[dingQue] || null : null,
+      wallRemaining: this.deck.length,
+      isBot: player?.isBot,
+      source: 'SERVER',
+    });
+
     if (player?.isBot) {
       this.scheduleBotTurn(seatId);
     }
@@ -350,6 +386,7 @@ export class MahjongRoom implements IGameRoom {
 
   private scheduleBotTurn(seatId: number): void {
     if (this.botTimer) clearTimeout(this.botTimer);
+    const delayMs = 1150 + Math.floor(Math.random() * 100);
     this.botTimer = setTimeout(() => {
       const pending = this.pendingActions.get(seatId);
       if (pending && pending.length > 0) {
@@ -380,7 +417,7 @@ export class MahjongRoom implements IGameRoom {
         this.playMode
       );
       this.executeDiscard(seatId, discard);
-    }, 1000);
+    }, delayMs);
   }
 
   handlePlayerDiscard(playerId: string, tileId: number): void {
@@ -397,11 +434,31 @@ export class MahjongRoom implements IGameRoom {
     if (idx === -1) return;
 
     hand.splice(idx, 1);
-    this.hands[seatId] = sortTiles(hand);
+    this.hands[seatId] = sortTiles(hand, this.playMode);
     this.drawnTiles[seatId] = null;
     this.discards[seatId].push(tileId);
     this.discardSeq++;
     this.latestDiscard = { seatId, tileId, seq: this.discardSeq };
+
+    const player = this.seats[seatId];
+    const isFemale = player?.avatarId === 'beier' || player?.avatarId === 'heroine';
+    const lackMap: Record<number, 'wan' | 'tiao' | 'tong'> = { 0: 'wan', 1: 'tiao', 2: 'tong' };
+    const dq = this.dingQueSuits[seatId];
+    MahjongDebugLogger.logDiscardAction({
+      seat: seatId,
+      playerName: player?.nickname || `座位${seatId}`,
+      tileId,
+      gender: isFemale ? 'female' : 'male',
+      mode: this.playMode,
+      handAfter: this.hands[seatId],
+      melds: this.melds[seatId],
+      lackSuit: dq !== null && dq !== undefined ? lackMap[dq] || null : null,
+      visibleTiles: [
+        ...this.discards.flat(),
+        ...this.melds.flatMap((mList) => mList.flatMap((m) => m.tiles || [])),
+      ],
+      source: 'SERVER',
+    });
 
     this.arbitrateDiscardResponse(seatId, tileId);
   }
@@ -481,7 +538,7 @@ export class MahjongRoom implements IGameRoom {
       this.resolveDiscardResponses();
     }, 9000);
 
-    // AI bot automatic response scheduling
+    // AI bot automatic response scheduling (commercial standard 950ms ~ 1100ms)
     this.pendingResponders.forEach((s) => {
       const p = this.seats[s];
       if (p?.isBot) {
@@ -490,7 +547,7 @@ export class MahjongRoom implements IGameRoom {
           if (!this.pendingResponders.has(s)) return;
           const act = MahjongBotEngine.decideAction(acts);
           this.submitPlayerResponse(s, act || { actionType: 'pass', targetTile: tileId });
-        }, 750 + Math.random() * 250);
+        }, 950 + Math.floor(Math.random() * 150));
       }
     });
   }
@@ -908,7 +965,7 @@ export class MahjongRoom implements IGameRoom {
       }
 
       const tingResults = this.hands.map((h, s) => {
-        return analyzeTing(h, this.melds[s], this.dingQueSuits[s], discardsCount);
+        return analyzeTing(h, this.melds[s], this.dingQueSuits[s], discardsCount, this.playMode);
       });
 
       // Crucial Fix: Any player who already Hu'd or retired is considered READY!
@@ -1003,7 +1060,7 @@ export class MahjongRoom implements IGameRoom {
       }
     }
 
-    const revealHands = this.hands.map((h) => sortTiles([...h]));
+    const revealHands = this.hands.map((h) => sortTiles([...h], this.playMode));
 
     this.settlementData = {
       endedReason: winners.length > 0 ? 'hu' : 'draw',

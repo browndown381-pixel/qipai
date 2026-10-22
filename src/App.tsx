@@ -54,12 +54,12 @@ import {
   detectFullscreenCapabilities,
 } from './shared/utils/fullscreenHelper';
 
-export type ResolutionTier = 'compact_mobile' | 'wide_mobile' | 'tablet_desktop';
+export type ResolutionTier = 'compact_mobile' | 'wide_mobile' | 'ultrawide' | 'tablet_desktop';
 
 /**
- * Percentage-based layout matrix (0% - 100%) guaranteeing zero overlap
+ * Percentage-based layout matrix (0% - 100%) guaranteeing zero overlap and zero edge clipping
  * between Hand Operation Zone, Played Cards Zone, Action Bar, and Avatar HUDs
- * across all mainstream mobile landscape resolutions.
+ * across all mainstream mobile, tablet, desktop, and ultrawide landscape resolutions.
  */
 export interface LayoutZonePercentages {
   sideMarginPct: number;
@@ -91,7 +91,7 @@ export interface ViewportMetrics {
   aspectRatio: number;
   tier: ResolutionTier;
   isCompactMobileLandscape: boolean;
-  /** Continuously interpolated UI scale factor (0.76 ~ 1.0) without breakpoint jumps */
+  /** Continuously interpolated UI scale factor (0.78 ~ 1.0) without breakpoint jumps */
   uiElementScale: number;
   zones: LayoutZonePercentages;
 }
@@ -99,75 +99,99 @@ export interface ViewportMetrics {
 const PERCENTAGE_PROFILES: Record<ResolutionTier, LayoutZonePercentages> = {
   // Small-screen mobile landscape (e.g., 667x375, 640x360, 740x360)
   compact_mobile: {
-    sideMarginPct: 1.8,
-    topBarTopPct: 1.6,
-    holeCardsTopPct: 7.4,
-    scoreLineTopPct: 14.9,
-    recorderTopPct: 16.6,
-    avatarTopPct: 11.2,
-    opponentDeckSideXPct: 6.6,
-    opponentDeckTopPct: 28.8,
-    turnClockSideXPct: 14.4,
-    turnClockBottomTopPct: 46.2,
-    playedSideXPct: 27.2,
-    playedSideTopPct: 29.6,
-    playedBottomTopPct: 39.6,
-    actionBarTopPct: 53.2,
-    comboBannerTopPct: 62.6,
-    handBandTopPct: 63.2,
-    handCenterYPct: 78.0,
-    handBandBottomPct: 90.0,
-    handWidthPct: 70.5,
-    handCardScale: 1.08,
-    bottomDockBottomPct: 1.2,
-  },
-  // Full-screen / Ultra-wide mobile landscape (e.g., 844x390, 852x393, 915x412, 932x430)
-  wide_mobile: {
-    sideMarginPct: 2.2,
-    topBarTopPct: 1.8,
-    holeCardsTopPct: 7.6,
-    scoreLineTopPct: 15.1,
-    recorderTopPct: 16.8,
-    avatarTopPct: 11.5,
-    opponentDeckSideXPct: 6.8,
-    opponentDeckTopPct: 29.4,
-    turnClockSideXPct: 14.6,
-    turnClockBottomTopPct: 46.8,
-    playedSideXPct: 27.5,
+    sideMarginPct: 2.8,
+    topBarTopPct: 2.6,
+    holeCardsTopPct: 8.2,
+    scoreLineTopPct: 15.6,
+    recorderTopPct: 17.4,
+    avatarTopPct: 13.0,
+    opponentDeckSideXPct: 7.2,
+    opponentDeckTopPct: 29.8,
+    turnClockSideXPct: 15.0,
+    turnClockBottomTopPct: 45.8,
+    playedSideXPct: 27.4,
     playedSideTopPct: 30.2,
-    playedBottomTopPct: 40.2,
-    actionBarTopPct: 53.8,
-    comboBannerTopPct: 63.0,
-    handBandTopPct: 63.6,
-    handCenterYPct: 78.2,
-    handBandBottomPct: 90.2,
-    handWidthPct: 69.5,
-    handCardScale: 1.09,
-    bottomDockBottomPct: 1.3,
+    playedBottomTopPct: 39.2,
+    actionBarTopPct: 52.4,
+    comboBannerTopPct: 61.8,
+    handBandTopPct: 63.0,
+    handCenterYPct: 76.8,
+    handBandBottomPct: 88.6,
+    handWidthPct: 68.0,
+    handCardScale: 0.98,
+    bottomDockBottomPct: 2.4,
   },
-  // Tablet & Desktop landscape (>= 960x540)
+  // Standard full-screen mobile landscape (e.g., 800x375, 812x375, 18:9 ~ 19:9)
+  wide_mobile: {
+    sideMarginPct: 3.6,
+    topBarTopPct: 2.8,
+    holeCardsTopPct: 8.4,
+    scoreLineTopPct: 15.8,
+    recorderTopPct: 17.6,
+    avatarTopPct: 13.4,
+    opponentDeckSideXPct: 7.6,
+    opponentDeckTopPct: 30.2,
+    turnClockSideXPct: 15.4,
+    turnClockBottomTopPct: 46.2,
+    playedSideXPct: 27.8,
+    playedSideTopPct: 30.6,
+    playedBottomTopPct: 39.6,
+    actionBarTopPct: 52.8,
+    comboBannerTopPct: 62.2,
+    handBandTopPct: 63.4,
+    handCenterYPct: 77.0,
+    handBandBottomPct: 88.8,
+    handWidthPct: 66.5,
+    handCardScale: 1.0,
+    bottomDockBottomPct: 2.6,
+  },
+  // Ultrawide mobile & display landscape (>= 19.5:9 / 20:9 / 21:9, e.g., 844x390, 915x412, 932x430, 2560x1080)
+  ultrawide: {
+    sideMarginPct: 4.8,
+    topBarTopPct: 3.0,
+    holeCardsTopPct: 8.6,
+    scoreLineTopPct: 16.2,
+    recorderTopPct: 18.0,
+    avatarTopPct: 13.8,
+    opponentDeckSideXPct: 8.4,
+    opponentDeckTopPct: 30.6,
+    turnClockSideXPct: 16.2,
+    turnClockBottomTopPct: 46.0,
+    playedSideXPct: 28.4,
+    playedSideTopPct: 30.8,
+    playedBottomTopPct: 39.4,
+    actionBarTopPct: 52.5,
+    comboBannerTopPct: 61.8,
+    handBandTopPct: 63.2,
+    handCenterYPct: 76.5,
+    handBandBottomPct: 88.2,
+    handWidthPct: 64.0,
+    handCardScale: 0.96,
+    bottomDockBottomPct: 2.8,
+  },
+  // Tablet & Desktop landscape (>= 960x540, 4:3 / 16:10 / 16:9)
   tablet_desktop: {
-    sideMarginPct: 2.4,
-    topBarTopPct: 1.9,
-    holeCardsTopPct: 7.7,
-    scoreLineTopPct: 15.3,
-    recorderTopPct: 17.0,
-    avatarTopPct: 11.8,
-    opponentDeckSideXPct: 6.9,
-    opponentDeckTopPct: 29.6,
-    turnClockSideXPct: 14.8,
-    turnClockBottomTopPct: 47.2,
+    sideMarginPct: 3.2,
+    topBarTopPct: 2.6,
+    holeCardsTopPct: 8.2,
+    scoreLineTopPct: 15.6,
+    recorderTopPct: 17.4,
+    avatarTopPct: 13.0,
+    opponentDeckSideXPct: 7.2,
+    opponentDeckTopPct: 30.0,
+    turnClockSideXPct: 15.0,
+    turnClockBottomTopPct: 46.6,
     playedSideXPct: 27.6,
     playedSideTopPct: 30.4,
-    playedBottomTopPct: 40.5,
-    actionBarTopPct: 54.1,
-    comboBannerTopPct: 63.2,
-    handBandTopPct: 64.0,
-    handCenterYPct: 78.4,
-    handBandBottomPct: 90.4,
-    handWidthPct: 69.0,
-    handCardScale: 1.08,
-    bottomDockBottomPct: 1.4,
+    playedBottomTopPct: 40.0,
+    actionBarTopPct: 53.4,
+    comboBannerTopPct: 62.6,
+    handBandTopPct: 63.8,
+    handCenterYPct: 77.5,
+    handBandBottomPct: 89.2,
+    handWidthPct: 67.5,
+    handCardScale: 1.02,
+    bottomDockBottomPct: 2.4,
   },
 };
 
@@ -211,9 +235,14 @@ function interpolateZones(
  */
 export function computeSmoothUiElementScale(width: number, height: number): number {
   if (width <= 0 || height <= 0) return 1;
-  const ratioW = width / 1100;
-  const ratioH = height / 560;
-  const effectiveRatio = Math.min(ratioW, ratioH);
+  const effW = Math.max(width, height);
+  const effH = Math.min(width, height);
+  const ratioW = effW / 1100;
+  const ratioH = effH / 560;
+  const aspect = effH > 0 ? effW / effH : 1.78;
+  // On ultrawide aspect ratios (> 1.95), slightly damp scale so HUD elements stay compact vertically
+  const aspectDamp = aspect > 1.95 ? Math.max(0.9, 1 - (aspect - 1.95) * 0.18) : 1;
+  const effectiveRatio = Math.min(ratioW, ratioH) * aspectDamp;
 
   // Normalize effectiveRatio from [0.52 .. 1.0] into [0 .. 1]
   const rawT = Math.max(0, Math.min(1, (effectiveRatio - 0.52) / (1.0 - 0.52)));
@@ -243,46 +272,60 @@ export function computeViewportMetrics(rawW?: number, rawH?: number): ViewportMe
   const vv = window.visualViewport;
   const width = Math.round(rawW ?? (vv ? vv.width : window.innerWidth));
   const height = Math.round(rawH ?? (vv ? vv.height : window.innerHeight));
-  const aspectRatio = height > 0 ? width / height : 1.78;
 
-  const uiElementScale = computeSmoothUiElementScale(width, height);
+  // Normalize effective landscape dimensions so portrait-held devices using AutoLandscapeContainer
+  // and native landscape devices evaluate aspect ratio and tiers identically
+  const effW = Math.max(width, height);
+  const effH = Math.min(width, height);
+  const aspectRatio = effH > 0 ? Number((effW / effH).toFixed(4)) : 1.78;
 
-  // Use a single continuous parameter s in [0 .. 1] based on effective dimension ratio
-  // so zone percentages never jump when crossing tier boundaries (e.g., 400px or 540px height).
-  const effectiveRatio = Math.min(width / 1100, height / 560);
+  const uiElementScale = computeSmoothUiElementScale(effW, effH);
+
+  // Continuous size parameter s in [0 .. 1] based on effective dimension ratio
+  const effectiveRatio = Math.min(effW / 1100, effH / 560);
   const sRaw = Math.max(0, Math.min(1, (effectiveRatio - 0.52) / (1.0 - 0.52)));
   const s = sRaw * sRaw * (3 - 2 * sRaw);
 
-  let tier: ResolutionTier = 'tablet_desktop';
-  let zones: LayoutZonePercentages;
+  let baseTier: ResolutionTier = 'tablet_desktop';
+  let baseZones: LayoutZonePercentages;
 
   if (s < 0.45) {
-    tier = 'compact_mobile';
+    baseTier = 'compact_mobile';
     const localT = s / 0.45;
-    zones = interpolateZones(
+    baseZones = interpolateZones(
       PERCENTAGE_PROFILES.compact_mobile,
       PERCENTAGE_PROFILES.wide_mobile,
       localT
     );
   } else if (s < 0.85) {
-    tier = 'wide_mobile';
+    baseTier = 'wide_mobile';
     const localT = (s - 0.45) / 0.4;
-    zones = interpolateZones(
+    baseZones = interpolateZones(
       PERCENTAGE_PROFILES.wide_mobile,
       PERCENTAGE_PROFILES.tablet_desktop,
       localT
     );
   } else {
-    tier = 'tablet_desktop';
-    zones = PERCENTAGE_PROFILES.tablet_desktop;
+    baseTier = 'tablet_desktop';
+    baseZones = PERCENTAGE_PROFILES.tablet_desktop;
   }
+
+  // Smoothly blend toward the Ultrawide profile as aspect ratio exceeds 1.85 (18.5:9 -> 20:9 / 21:9)
+  const ultraRaw = Math.max(0, Math.min(1, (aspectRatio - 1.85) / (2.22 - 1.85)));
+  const ultraSmooth = ultraRaw * ultraRaw * (3 - 2 * ultraRaw);
+  const zones =
+    ultraSmooth > 0
+      ? interpolateZones(baseZones, PERCENTAGE_PROFILES.ultrawide, ultraSmooth)
+      : baseZones;
+
+  const tier: ResolutionTier = aspectRatio >= 1.98 ? 'ultrawide' : baseTier;
 
   return {
     width,
     height,
     aspectRatio,
     tier,
-    isCompactMobileLandscape: tier !== 'tablet_desktop',
+    isCompactMobileLandscape: tier !== 'tablet_desktop' && effH < 560,
     uiElementScale,
     zones,
   };

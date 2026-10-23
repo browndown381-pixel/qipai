@@ -190,11 +190,86 @@ export class NiuniuRoom implements IGameRoom {
     });
   }
 
+  replaceBotWithHuman(player: {
+    playerId: string;
+    nickname: string;
+    avatarId: string;
+    beans: number;
+  }): boolean {
+    if (this.phase !== 'WAITING' && this.phase !== 'ROUND_RESULT') return false;
+    const botIndex = this.seats.findIndex((s) => s?.isBot);
+    if (botIndex === -1) return false;
+    this.seats[botIndex] = {
+      playerId: player.playerId,
+      nickname: player.nickname,
+      avatarId: player.avatarId,
+      seatIndex: botIndex,
+      beans: player.beans,
+      ready: true,
+      isBot: false,
+      disconnected: false,
+      trusteeship: false,
+    };
+    this.broadcastSnapshot();
+    this.checkAutoStart();
+    return true;
+  }
+
+  private isAutoActSeat(seatIndex: number): boolean {
+    const s = this.seats[seatIndex];
+    return Boolean(s && (s.isBot || s.disconnected || s.trusteeship));
+  }
+
+  private triggerAutoTakeoverIfNeeded(seatIndex: number): void {
+    if (!this.isAutoActSeat(seatIndex)) return;
+    const seat = this.seats[seatIndex];
+    if (!seat) return;
+
+    if (this.phase === 'CALL_BANKER' && this.callMultipliers[seatIndex] === -1) {
+      const timer = setTimeout(() => {
+        if (this.phase === 'CALL_BANKER' && this.callMultipliers[seatIndex] === -1) {
+          const call = NiuniuBotEngine.decideCallBanker(
+            this.hands[seatIndex].slice(0, 4),
+            this.playMode
+          );
+          this.handleCallBanker(seatIndex, call);
+        }
+      }, 900);
+      this.botActionTimers.push(timer);
+    } else if (
+      this.phase === 'BETTING' &&
+      seatIndex !== this.dealerSeatId &&
+      this.betMultipliers[seatIndex] === 0
+    ) {
+      const dealerCall = Math.max(1, this.callMultipliers[this.dealerSeatId] || 1);
+      const timer = setTimeout(() => {
+        if (this.phase === 'BETTING' && this.betMultipliers[seatIndex] === 0) {
+          const bet = NiuniuBotEngine.decideBetMultiplier(
+            this.hands[seatIndex].slice(0, 4),
+            this.playMode,
+            dealerCall
+          );
+          this.handleBet(seatIndex, bet);
+        }
+      }, 900);
+      this.botActionTimers.push(timer);
+    } else if (this.phase === 'SHOWDOWN' && !this.hasShownHand[seatIndex]) {
+      const timer = setTimeout(() => {
+        if (this.phase === 'SHOWDOWN' && !this.hasShownHand[seatIndex]) {
+          this.handleShowHand(seatIndex);
+        }
+      }, 900);
+      this.botActionTimers.push(timer);
+    }
+  }
+
   handlePlayerDisconnect(playerId: string): void {
-    const seat = this.seats.find((s) => s?.playerId === playerId);
-    if (seat) {
-      seat.disconnected = true;
+    const seatIndex = this.seats.findIndex((s) => s?.playerId === playerId);
+    if (seatIndex !== -1 && this.seats[seatIndex]) {
+      this.seats[seatIndex]!.disconnected = true;
+      this.seats[seatIndex]!.trusteeship = true;
       this.broadcastSnapshot();
+      this.triggerAutoTakeoverIfNeeded(seatIndex);
     }
   }
 
@@ -202,6 +277,7 @@ export class NiuniuRoom implements IGameRoom {
     const seat = this.seats.find((s) => s?.playerId === playerId);
     if (seat) {
       seat.disconnected = false;
+      seat.trusteeship = false;
       this.sendSnapshotToPlayer(playerId);
       this.broadcastSnapshot();
     }
@@ -209,7 +285,21 @@ export class NiuniuRoom implements IGameRoom {
 
   handleClientEvent(playerId: string, event: string, payload: unknown): void {
     const seatIndex = this.seats.findIndex((s) => s?.playerId === playerId);
-    if (seatIndex === -1) return;
+    if (seatIndex === -1 || !this.seats[seatIndex]) return;
+
+    if (event === 'c2s_toggle_trusteeship') {
+      const data = (payload || {}) as { trusteeship?: boolean };
+      this.seats[seatIndex]!.trusteeship =
+        data.trusteeship !== undefined ? Boolean(data.trusteeship) : !this.seats[seatIndex]!.trusteeship;
+      this.broadcastSnapshot();
+      if (this.seats[seatIndex]!.trusteeship) {
+        this.triggerAutoTakeoverIfNeeded(seatIndex);
+      }
+      return;
+    }
+
+    this.seats[seatIndex]!.disconnected = false;
+    this.seats[seatIndex]!.trusteeship = false;
 
     if (event === 'c2s_niuniu_call_banker') {
       const { callMultiplier } = (payload || {}) as { callMultiplier?: number };
@@ -362,7 +452,7 @@ export class NiuniuRoom implements IGameRoom {
           this.playMode
         );
       }
-      if (seat && seat.isBot && this.callMultipliers[idx] === -1) {
+      if (seat && this.isAutoActSeat(idx) && this.callMultipliers[idx] === -1) {
         const delay = 600 + Math.random() * 1100;
         const timer = setTimeout(() => {
           if (this.phase === 'CALL_BANKER' && this.callMultipliers[idx] === -1) {
@@ -456,7 +546,7 @@ export class NiuniuRoom implements IGameRoom {
     const dealerCall = Math.max(1, this.callMultipliers[this.dealerSeatId] || 1);
 
     this.seats.forEach((seat, idx) => {
-      if (seat && seat.isBot && idx !== this.dealerSeatId && this.betMultipliers[idx] === 0) {
+      if (seat && this.isAutoActSeat(idx) && idx !== this.dealerSeatId && this.betMultipliers[idx] === 0) {
         const delay = 500 + Math.random() * 1000;
         const timer = setTimeout(() => {
           if (this.phase === 'BETTING' && this.betMultipliers[idx] === 0) {
@@ -531,7 +621,7 @@ export class NiuniuRoom implements IGameRoom {
     this.broadcastSnapshot();
 
     this.seats.forEach((seat, idx) => {
-      if (seat && seat.isBot) {
+      if (seat && this.isAutoActSeat(idx)) {
         const delay = 800 + Math.random() * 1600;
         const timer = setTimeout(() => {
           if (this.phase === 'SHOWDOWN' && !this.hasShownHand[idx]) {

@@ -1,5 +1,6 @@
 import { Server, Socket } from 'socket.io';
 import { redisClient } from './redisClient.js';
+import { securityGateway } from './SecurityGateway.js';
 
 /**
  * ConnectionManager: Manages player socket sessions, heartbeats, and disconnect tolerance.
@@ -25,8 +26,24 @@ export class ConnectionManager {
     const oldSocketId = this.playerToSocket.get(playerId);
     if (oldSocketId && oldSocketId !== socket.id) {
       this.socketToPlayer.delete(oldSocketId);
+      securityGateway.removeSocketState(oldSocketId);
     }
 
+    this.playerToSocket.set(playerId, socket.id);
+    this.socketToPlayer.set(socket.id, playerId);
+    await redisClient.hset('online_players', playerId, JSON.stringify({
+      socketId: socket.id,
+      disconnected: false,
+      updatedAt: Date.now(),
+    }));
+  }
+
+  async touchHeartbeat(playerId: string, socket: Socket): Promise<void> {
+    const existingTimer = this.disconnectTimers.get(playerId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.disconnectTimers.delete(playerId);
+    }
     this.playerToSocket.set(playerId, socket.id);
     this.socketToPlayer.set(socket.id, playerId);
     await redisClient.hset('online_players', playerId, JSON.stringify({
@@ -46,6 +63,14 @@ export class ConnectionManager {
     return this.io.sockets.sockets.get(socketId);
   }
 
+  getOnlinePlayerCount(): number {
+    return this.playerToSocket.size;
+  }
+
+  getPendingReconnectCount(): number {
+    return this.disconnectTimers.size;
+  }
+
   emitToPlayer(playerId: string, event: string, payload: unknown): void {
     const socket = this.getSocketByPlayerId(playerId);
     if (socket) {
@@ -59,6 +84,8 @@ export class ConnectionManager {
     onGracePeriodExpired: (playerId: string) => void,
     gracePeriodMs = 75000
   ): Promise<void> {
+    securityGateway.removeSocketState(socketId);
+
     const playerId = this.socketToPlayer.get(socketId);
     if (!playerId) return;
 

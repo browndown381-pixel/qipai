@@ -5,10 +5,12 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
 import { ConnectionManager } from './server/core/ConnectionManager.js';
 import { RoomManager } from './server/core/RoomManager.js';
+import { securityGateway } from './server/core/SecurityGateway.js';
 import { DdzRoom } from './server/games/ddz/DdzRoom.js';
 import { MahjongRoom } from './server/games/mahjong/MahjongRoom.js';
 import { NiuniuRoom } from './server/games/niuniu/NiuniuRoom.js';
 import { ZhajinhuaRoom } from './server/games/zhajinhua/ZhajinhuaRoom.js';
+import { LaoYanCaiRoom } from './server/games/laoyancai/LaoYanCaiRoom.js';
 import { storageService, UserProfile } from './server/shared/storage.js';
 
 async function startServer() {
@@ -32,6 +34,7 @@ async function startServer() {
   roomManager.registerGameFactory('mahjong', (opts) => new MahjongRoom(opts));
   roomManager.registerGameFactory('niuniu', (opts) => new NiuniuRoom(opts));
   roomManager.registerGameFactory('zhajinhua', (opts) => new ZhajinhuaRoom(opts));
+  roomManager.registerGameFactory('laoyancai', (opts) => new LaoYanCaiRoom(opts));
 
   // Every room type exposes sendSnapshotToPlayer(); avoid instanceof chains per game.
   const sendRoomSnapshot = (room: unknown, playerId: string): void => {
@@ -39,12 +42,13 @@ async function startServer() {
     target?.sendSnapshotToPlayer?.(playerId);
   };
 
-  // Helper to guarantee socket has a bound player session even if an action fires immediately
+  // Helper to guarantee socket has a bound player session and verified/issued HMAC sessionToken
   const ensurePlayerProfile = async (
     socket: Socket,
     fallbackId?: string,
     nickname?: string,
-    avatarId?: string
+    avatarId?: string,
+    providedToken?: string
   ): Promise<UserProfile> => {
     const existingPlayerId = connectionManager.getPlayerIdBySocket(socket.id);
     if (existingPlayerId) {
@@ -53,7 +57,11 @@ async function startServer() {
     }
 
     const authData = (socket.handshake.auth ?? {}) as Record<string, string | undefined>;
+    const tokenCandidate = providedToken || authData.sessionToken;
+    const verifiedPlayerId = securityGateway.verifySessionToken(tokenCandidate);
+
     const rawId =
+      verifiedPlayerId ||
       fallbackId ||
       authData.playerId ||
       `guest_${socket.id.slice(0, 8)}`;
@@ -67,7 +75,7 @@ async function startServer() {
     return profile;
   };
 
-  // REST API endpoints for Lobby & Stats
+  // REST API endpoints for Lobby, Ledger Audit & Server Observability
   app.get('/api/rooms', (req, res) => {
     const gameType = typeof req.query.gameType === 'string' ? req.query.gameType : undefined;
     res.json({ rooms: roomManager.getPublicRooms(gameType) });
@@ -82,6 +90,23 @@ async function startServer() {
     res.json({ matches });
   });
 
+  app.get('/api/ledger/:playerId', (req, res) => {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+    const ledger = storageService.getPlayerLedger(req.params.playerId, limit);
+    res.json({ ledger });
+  });
+
+  app.get('/api/server/stats', (_req, res) => {
+    res.json({
+      uptimeSeconds: Math.floor(process.uptime()),
+      onlinePlayers: connectionManager.getOnlinePlayerCount(),
+      pendingReconnects: connectionManager.getPendingReconnectCount(),
+      rooms: roomManager.getRoomStats(),
+      storage: storageService.getStorageStats(),
+      security: securityGateway.getStats(),
+    });
+  });
+
   app.get('/api/replay/:matchId', (req, res) => {
     const replay = storageService.getMatchReplay(req.params.matchId);
     if (!replay) {
@@ -94,31 +119,116 @@ async function startServer() {
   // WebSocket (Socket.io) protocol handlers
   io.on('connection', async (socket) => {
     // Auto-bind immediately from handshake auth if available
-    if (socket.handshake.auth?.playerId) {
+    if (socket.handshake.auth?.playerId || socket.handshake.auth?.sessionToken) {
       await ensurePlayerProfile(socket);
     }
 
     socket.on(
       'c2s_auth_guest',
-      async (payload: { playerId?: string; nickname?: string; avatarId?: string }) => {
+      async (payload: {
+        playerId?: string;
+        nickname?: string;
+        avatarId?: string;
+        sessionToken?: string;
+        activeRoomId?: string;
+        activeGameType?: string;
+        silentReconnect?: boolean;
+      }) => {
+        if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
+
         const profile = await ensurePlayerProfile(
           socket,
           payload?.playerId,
           payload?.nickname,
-          payload?.avatarId
+          payload?.avatarId,
+          payload?.sessionToken
         );
 
-        const activeRoom = roomManager.getRoomByPlayer(profile.playerId);
+        const sessionToken = securityGateway.issueSessionToken(profile.playerId);
+        let activeRoom = roomManager.getRoomByPlayer(profile.playerId);
+
+        // Silent session & room recovery: if client carried an activeRoomId from localStorage
+        // and the room is still alive on server, seamlessly rejoin it
+        if (!activeRoom && payload?.activeRoomId) {
+          const cleanRoomId = String(payload.activeRoomId).trim();
+          const joinRes = roomManager.joinRoom(cleanRoomId, {
+            playerId: profile.playerId,
+            nickname: profile.nickname,
+            avatarId: profile.avatarId,
+            beans: profile.beans,
+          });
+          if (joinRes.ok && joinRes.room) {
+            activeRoom = joinRes.room;
+          }
+        }
+
         socket.emit('s2c_auth_success', {
           profile,
+          sessionToken,
           activeRoomId: activeRoom?.roomId ?? null,
           activeGameType: activeRoom?.gameType ?? null,
+          silentReconnect: Boolean(payload?.silentReconnect),
           rooms: roomManager.getPublicRooms(),
         });
 
         if (activeRoom) {
           socket.join(activeRoom.roomId);
           activeRoom.handlePlayerReconnect(profile.playerId);
+          sendRoomSnapshot(activeRoom, profile.playerId);
+          void roomManager.syncRoomSnapshotToRedis(activeRoom);
+        }
+      }
+    );
+
+    socket.on(
+      'c2s_heartbeat',
+      async (payload?: {
+        clientTime?: number;
+        sessionToken?: string;
+        activeRoomId?: string;
+      }) => {
+        const profile = await ensurePlayerProfile(
+          socket,
+          undefined,
+          undefined,
+          undefined,
+          payload?.sessionToken
+        );
+        await connectionManager.touchHeartbeat(profile.playerId, socket);
+
+        let activeRoom = roomManager.getRoomByPlayer(profile.playerId);
+        let recoveredRoom = false;
+
+        if (!activeRoom && payload?.activeRoomId) {
+          const cleanRoomId = String(payload.activeRoomId).trim();
+          const joinRes = roomManager.joinRoom(cleanRoomId, {
+            playerId: profile.playerId,
+            nickname: profile.nickname,
+            avatarId: profile.avatarId,
+            beans: profile.beans,
+          });
+          if (joinRes.ok && joinRes.room) {
+            activeRoom = joinRes.room;
+            recoveredRoom = true;
+          }
+        }
+
+        const refreshedToken = securityGateway.issueSessionToken(profile.playerId);
+        socket.emit('s2c_heartbeat_ack', {
+          serverTime: Date.now(),
+          clientTime: payload?.clientTime ?? Date.now(),
+          playerId: profile.playerId,
+          sessionToken: refreshedToken,
+          activeRoomId: activeRoom?.roomId ?? null,
+          activeGameType: activeRoom?.gameType ?? null,
+          recoveredRoom,
+        });
+
+        if (activeRoom && recoveredRoom) {
+          socket.join(activeRoom.roomId);
+          activeRoom.handlePlayerReconnect(profile.playerId);
+          sendRoomSnapshot(activeRoom, profile.playerId);
+          void roomManager.syncRoomSnapshotToRedis(activeRoom);
         }
       }
     );
@@ -126,6 +236,7 @@ async function startServer() {
     socket.on(
       'c2s_update_profile',
       async (payload: { nickname: string; avatarId?: string }) => {
+        if (!securityGateway.consumeRateLimit(socket.id, 2)) return;
         const profile = await ensurePlayerProfile(socket);
         const updated = storageService.updateNickname(
           profile.playerId,
@@ -139,6 +250,7 @@ async function startServer() {
     );
 
     socket.on('c2s_claim_supply', async () => {
+      if (!securityGateway.consumeRateLimit(socket.id, 2)) return;
       const profile = await ensurePlayerProfile(socket);
       const updated = storageService.claimFreeSupply(profile.playerId);
       if (updated) {
@@ -150,6 +262,7 @@ async function startServer() {
     });
 
     socket.on('c2s_get_lobby_data', async () => {
+      if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
       const profile = await ensurePlayerProfile(socket);
       socket.emit('s2c_lobby_data', {
         profile,
@@ -168,10 +281,14 @@ async function startServer() {
         autoFillBots?: boolean;
         mode?: string;
       }) => {
+        if (!securityGateway.consumeRateLimit(socket.id, 2)) return;
+        if (!securityGateway.checkActionIdempotency(socket.id, 'c2s_create_room', payload)) return;
+
         const profile = await ensurePlayerProfile(socket);
+        const gameType = payload?.gameType || 'ddz';
 
         // Deduct 1 room card from host when creating a room
-        if (!storageService.consumeRoomCard(profile.playerId, 1)) {
+        if (!storageService.consumeRoomCard(profile.playerId, 1, undefined, gameType)) {
           socket.emit('s2c_action_error', {
             message: '房卡不足（建房需消耗 1 张房卡），请先点击“免费补给”领取房卡',
           });
@@ -184,7 +301,7 @@ async function startServer() {
           : 100;
 
         const room = roomManager.createRoom({
-          gameType: payload?.gameType || 'ddz',
+          gameType,
           hostPlayer: {
             playerId: profile.playerId,
             nickname: profile.nickname,
@@ -203,6 +320,7 @@ async function startServer() {
           while (room.getPlayerCount() < room.maxPlayers) {
             room.addBotPlayer();
           }
+          void roomManager.syncRoomSnapshotToRedis(room);
         }
 
         sendRoomSnapshot(room, profile.playerId);
@@ -211,6 +329,9 @@ async function startServer() {
     );
 
     socket.on('c2s_join_room', async (payload: { roomId: string }) => {
+      if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
+      if (!securityGateway.checkActionIdempotency(socket.id, 'c2s_join_room', payload)) return;
+
       const profile = await ensurePlayerProfile(socket);
 
       const cleanRoomId = String(payload?.roomId ?? '').trim();
@@ -234,6 +355,9 @@ async function startServer() {
     socket.on(
       'c2s_quick_match',
       async (payload: { gameType?: string; baseScore?: number; fillBots?: boolean; mode?: string }) => {
+        if (!securityGateway.consumeRateLimit(socket.id, 2)) return;
+        if (!securityGateway.checkActionIdempotency(socket.id, 'c2s_quick_match', payload)) return;
+
         const profile = await ensurePlayerProfile(socket);
 
         const allowedScores = [100, 200, 300, 500, 800, 2000, 10000];
@@ -253,7 +377,14 @@ async function startServer() {
           },
           baseScore,
           fillBots,
-          payload?.mode || (gameType === 'mahjong' ? 'puer' : gameType === 'niuniu' ? 'qiangzhuang' : 'classic')
+          payload?.mode ||
+            (gameType === 'mahjong'
+              ? 'puer'
+              : gameType === 'niuniu'
+              ? 'qiangzhuang'
+              : gameType === 'laoyancai'
+              ? 'kunming'
+              : 'classic')
         );
 
         socket.emit('s2c_room_joined', { roomId: room.roomId, gameType: room.gameType });
@@ -263,30 +394,36 @@ async function startServer() {
     );
 
     socket.on('c2s_request_snapshot', async () => {
+      if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
       const profile = await ensurePlayerProfile(socket);
       const room = roomManager.getRoomByPlayer(profile.playerId);
       sendRoomSnapshot(room, profile.playerId);
     });
 
     socket.on('c2s_add_bot', async () => {
+      if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
       const profile = await ensurePlayerProfile(socket);
       const room = roomManager.getRoomByPlayer(profile.playerId);
       if (!room) return;
 
       room.addBotPlayer();
+      void roomManager.syncRoomSnapshotToRedis(room);
       sendRoomSnapshot(room, profile.playerId);
       io.emit('s2c_rooms_updated', { rooms: roomManager.getPublicRooms() });
     });
 
     socket.on('c2s_toggle_ready', async (payload?: { ready?: boolean }) => {
+      if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
       const profile = await ensurePlayerProfile(socket);
       const room = roomManager.getRoomByPlayer(profile.playerId);
       if (!room) return;
 
       room.setPlayerReady(profile.playerId, payload?.ready ?? true);
+      void roomManager.syncRoomSnapshotToRedis(room);
     });
 
     socket.on('c2s_leave_room', async () => {
+      if (!securityGateway.consumeRateLimit(socket.id, 1)) return;
       const profile = await ensurePlayerProfile(socket);
       roomManager.leaveRoom(profile.playerId);
       const updatedProfile = storageService.getUser(profile.playerId);
@@ -297,7 +434,7 @@ async function startServer() {
       io.emit('s2c_rooms_updated', { rooms: roomManager.getPublicRooms() });
     });
 
-    // Forward game-specific events to room
+    // Forward game-specific events to room with Token Bucket rate limiting & action sequence idempotency guard
     const gameEvents = [
       'c2s_call_landlord',
       'c2s_grab_landlord',
@@ -322,14 +459,30 @@ async function startServer() {
       // Zhajinhua events
       'c2s_zjh_action',
       'c2s_zjh_ready',
+      // Lao Yan Cai events
+      'c2s_lyc_call_banker',
+      'c2s_lyc_bet',
+      'c2s_lyc_banker_natural',
+      'c2s_lyc_player_decision',
+      'c2s_lyc_banker_decision',
+      'c2s_lyc_ready',
     ];
 
     for (const evt of gameEvents) {
       socket.on(evt, async (payload: unknown) => {
+        if (!securityGateway.consumeRateLimit(socket.id, 1)) {
+          socket.emit('s2c_action_error', { message: '操作过于频繁，请稍候再试' });
+          return;
+        }
+        if (evt !== 'c2s_request_hint' && !securityGateway.checkActionIdempotency(socket.id, evt, payload)) {
+          return;
+        }
+
         const profile = await ensurePlayerProfile(socket);
         const room = roomManager.getRoomByPlayer(profile.playerId);
         if (!room) return;
         room.handleClientEvent(profile.playerId, evt, payload);
+        void roomManager.syncRoomSnapshotToRedis(room);
       });
     }
 
@@ -340,6 +493,7 @@ async function startServer() {
           const room = roomManager.getRoomByPlayer(playerId);
           if (room) {
             room.handlePlayerDisconnect(playerId);
+            void roomManager.syncRoomSnapshotToRedis(room);
           }
         },
         (playerId) => {

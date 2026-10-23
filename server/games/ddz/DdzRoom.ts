@@ -168,6 +168,32 @@ export class DdzRoom implements IGameRoom {
     return !this.seats.some((s) => s !== null && !s.isBot && !s.disconnected);
   }
 
+  replaceBotWithHuman(player: {
+    playerId: string;
+    nickname: string;
+    avatarId: string;
+    beans: number;
+  }): boolean {
+    if (this.stateMachine.phase !== 'WAITING' && this.stateMachine.phase !== 'SETTLEMENT') {
+      return false;
+    }
+    const botIdx = this.seats.findIndex((s) => s?.isBot);
+    if (botIdx === -1) return false;
+    this.seats[botIdx] = {
+      playerId: player.playerId,
+      nickname: player.nickname,
+      avatarId: player.avatarId,
+      seatIndex: botIdx,
+      beans: player.beans,
+      ready: false,
+      isBot: false,
+      disconnected: false,
+      trusteeship: false,
+    };
+    this.broadcastRoomState();
+    return true;
+  }
+
   setPlayerReady(playerId: string, ready = true): void {
     const player = this.seats.find((s) => s?.playerId === playerId);
     if (!player) return;

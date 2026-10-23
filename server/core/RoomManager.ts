@@ -49,6 +49,7 @@ export interface IGameRoom {
   isEmptyOfHumans(): boolean;
   setPlayerReady(playerId: string, ready?: boolean): void;
   addBotPlayer(): boolean;
+  replaceBotWithHuman?(player: { playerId: string; nickname: string; avatarId: string; beans: number }): boolean;
   handlePlayerDisconnect(playerId: string): void;
   handlePlayerReconnect(playerId: string): void;
   handleClientEvent(playerId: string, event: string, payload: unknown): void;
@@ -66,14 +67,23 @@ export type RoomFactory = (options: {
   onRoomDestroyed: (roomId: string) => void;
 }) => IGameRoom;
 
+const ROOM_REDIS_TTL_SECONDS = 3600;
+const STALE_ROOM_CHECK_INTERVAL_MS = 30000;
+const STALE_WAITING_ROOM_TTL_MS = 15 * 60 * 1000;
+
 export class RoomManager {
   private rooms: Map<string, IGameRoom> = new Map();
   private playerToRoom: Map<string, string> = new Map();
   private factories: Map<string, RoomFactory> = new Map();
   private connectionManager: ConnectionManager;
+  private roomLastActiveAt: Map<string, number> = new Map();
+  private gcTimer: NodeJS.Timeout;
 
   constructor(connectionManager: ConnectionManager) {
     this.connectionManager = connectionManager;
+    this.gcTimer = setInterval(() => {
+      void this.cleanupStaleRooms();
+    }, STALE_ROOM_CHECK_INTERVAL_MS);
   }
 
   registerGameFactory(gameType: string, factory: RoomFactory): void {
@@ -88,6 +98,23 @@ export class RoomManager {
       }
     }
     return Date.now().toString().slice(-6);
+  }
+
+  /**
+   * Synchronizes hot room snapshot metadata to RedisClient with a 1-hour TTL
+   * so active rooms & player mappings remain inspectable and recoverable.
+   */
+  async syncRoomSnapshotToRedis(room: IGameRoom): Promise<void> {
+    this.roomLastActiveAt.set(room.roomId, Date.now());
+    const summary = room.getSummary();
+    await redisClient.set(
+      `room:${room.roomId}`,
+      JSON.stringify({
+        ...summary,
+        updatedAt: Date.now(),
+      }),
+      ROOM_REDIS_TTL_SECONDS
+    );
   }
 
   createRoom(options: {
@@ -117,7 +144,8 @@ export class RoomManager {
       connectionManager: this.connectionManager,
       onRoomDestroyed: (id) => {
         this.rooms.delete(id);
-        redisClient.del(`room:${id}`);
+        this.roomLastActiveAt.delete(id);
+        void redisClient.del(`room:${id}`);
       },
     });
 
@@ -125,6 +153,7 @@ export class RoomManager {
     room.addPlayer(options.hostPlayer);
     this.playerToRoom.set(options.hostPlayer.playerId, roomId);
     this.bindSocketRoom(options.hostPlayer.playerId, roomId);
+    void this.syncRoomSnapshotToRedis(room);
     return room;
   }
 
@@ -146,14 +175,31 @@ export class RoomManager {
       this.playerToRoom.set(player.playerId, roomId);
       this.bindSocketRoom(player.playerId, roomId);
       room.handlePlayerReconnect(player.playerId);
+      void this.syncRoomSnapshotToRedis(room);
       return { ok: true, room };
     }
 
+    const isWaitingState =
+      room.status === 'WAITING' ||
+      room.status === 'waiting' ||
+      room.status === 'ROUND_RESULT' ||
+      room.status === 'RESULT';
+
+    // Smart human seat replacement: if a waiting room is full because of bots, swap a bot out for the real human!
     if (room.getPlayerCount() >= room.maxPlayers) {
-      return { ok: false, error: '该房间人数已满（3/3）' };
+      if (isWaitingState && typeof room.replaceBotWithHuman === 'function') {
+        const replaced = room.replaceBotWithHuman(player);
+        if (replaced) {
+          this.playerToRoom.set(player.playerId, roomId);
+          this.bindSocketRoom(player.playerId, roomId);
+          void this.syncRoomSnapshotToRedis(room);
+          return { ok: true, room };
+        }
+      }
+      return { ok: false, error: `该房间人数已满（${room.getPlayerCount()}/${room.maxPlayers}）` };
     }
 
-    if (room.status !== 'WAITING') {
+    if (!isWaitingState) {
       return { ok: false, error: '该房间对局已开始，无法中途加入' };
     }
 
@@ -164,6 +210,7 @@ export class RoomManager {
 
     this.playerToRoom.set(player.playerId, roomId);
     this.bindSocketRoom(player.playerId, roomId);
+    void this.syncRoomSnapshotToRedis(room);
     return { ok: true, room };
   }
 
@@ -179,29 +226,41 @@ export class RoomManager {
       this.leaveRoom(player.playerId);
     }
 
-    // Find an open public room waiting for players with matching mode & baseScore
+    // 1. Smart Human Matchmaking Window:
+    // Prefer matching into an existing public room with matching gameType, baseScore, and mode
+    // that is either waiting for players OR has replaceable AI bots between rounds.
     for (const room of this.rooms.values()) {
+      const isWaitingState =
+        room.status === 'WAITING' ||
+        room.status === 'waiting' ||
+        room.status === 'ROUND_RESULT' ||
+        room.status === 'RESULT';
+      const hasOpenOrBotSeat =
+        room.getPlayerCount() < room.maxPlayers ||
+        typeof room.replaceBotWithHuman === 'function';
+
       if (
         room.gameType === gameType &&
         !room.isPrivate &&
         room.baseScore === baseScore &&
         (!mode || !room.mode || room.mode === mode) &&
-        room.status === 'WAITING' &&
-        room.getPlayerCount() < room.maxPlayers
+        isWaitingState &&
+        hasOpenOrBotSeat
       ) {
         const res = this.joinRoom(room.roomId, player);
         if (res.ok && res.room) {
           if (fillBotsImmediately) {
             while (res.room.getPlayerCount() < res.room.maxPlayers) {
-              res.room.addBotPlayer();
+              if (!res.room.addBotPlayer()) break;
             }
           }
+          void this.syncRoomSnapshotToRedis(res.room);
           return res.room;
         }
       }
     }
 
-    // Otherwise create a new public room
+    // 2. Otherwise create a new public room
     const newRoom = this.createRoom({
       gameType,
       hostPlayer: player,
@@ -212,10 +271,11 @@ export class RoomManager {
 
     if (fillBotsImmediately) {
       while (newRoom.getPlayerCount() < newRoom.maxPlayers) {
-        newRoom.addBotPlayer();
+        if (!newRoom.addBotPlayer()) break;
       }
     }
 
+    void this.syncRoomSnapshotToRedis(newRoom);
     return newRoom;
   }
 
@@ -233,7 +293,10 @@ export class RoomManager {
     if (room.isEmptyOfHumans()) {
       room.destroy();
       this.rooms.delete(roomId);
-      redisClient.del(`room:${roomId}`);
+      this.roomLastActiveAt.delete(roomId);
+      void redisClient.del(`room:${roomId}`);
+    } else {
+      void this.syncRoomSnapshotToRedis(room);
     }
   }
 
@@ -256,6 +319,50 @@ export class RoomManager {
       }
     }
     return list.sort((a, b) => b.playerCount - a.playerCount);
+  }
+
+  /**
+   * Periodic zombie/abandoned room garbage collector.
+   * Cleans up rooms with zero human players or idle WAITING rooms older than 15 minutes.
+   */
+  async cleanupStaleRooms(): Promise<number> {
+    const now = Date.now();
+    let cleaned = 0;
+
+    for (const [roomId, room] of this.rooms.entries()) {
+      const lastActive = this.roomLastActiveAt.get(roomId) ?? room.createdAt;
+      const isWaiting = room.status === 'WAITING' || room.status === 'waiting';
+      const isAbandoned =
+        room.isEmptyOfHumans() ||
+        (isWaiting && now - lastActive > STALE_ROOM_CHECK_INTERVAL_MS && now - room.createdAt > STALE_WAITING_ROOM_TTL_MS);
+
+      if (isAbandoned) {
+        room.destroy();
+        this.rooms.delete(roomId);
+        this.roomLastActiveAt.delete(roomId);
+        await redisClient.del(`room:${roomId}`);
+        cleaned += 1;
+      } else {
+        await this.syncRoomSnapshotToRedis(room);
+      }
+    }
+    return cleaned;
+  }
+
+  getRoomStats(): {
+    totalRooms: number;
+    activePlayerMappings: number;
+    roomsByGame: Record<string, number>;
+  } {
+    const roomsByGame: Record<string, number> = {};
+    for (const room of this.rooms.values()) {
+      roomsByGame[room.gameType] = (roomsByGame[room.gameType] ?? 0) + 1;
+    }
+    return {
+      totalRooms: this.rooms.size,
+      activePlayerMappings: this.playerToRoom.size,
+      roomsByGame,
+    };
   }
 
   private bindSocketRoom(playerId: string, roomId: string): void {

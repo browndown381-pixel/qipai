@@ -255,13 +255,39 @@ export class ZhajinhuaRoom implements IGameRoom {
     });
   }
 
+  replaceBotWithHuman(player: {
+    playerId: string;
+    nickname: string;
+    avatarId: string;
+    beans: number;
+  }): boolean {
+    if (this.phase !== 'WAITING' && this.phase !== 'RESULT') return false;
+    const botIdx = this.seats.findIndex((s) => s?.isBot);
+    if (botIdx === -1) return false;
+    this.seats[botIdx] = {
+      playerId: player.playerId,
+      nickname: player.nickname,
+      avatarId: player.avatarId,
+      seatIndex: botIdx,
+      beans: player.beans,
+      ready: true,
+      isBot: false,
+      disconnected: false,
+      trusteeship: false,
+    };
+    this.state[botIdx] = freshState();
+    this.broadcastSnapshot();
+    return true;
+  }
+
   handlePlayerDisconnect(playerId: string): void {
     const idx = this.seatOf(playerId);
     if (idx === -1) return;
     this.seats[idx]!.disconnected = true;
+    this.seats[idx]!.trusteeship = true;
     this.broadcastSnapshot();
     if (this.phase === 'BETTING' && this.turnOpen && this.currentTurnSeat === idx) {
-      this.scheduleBotTurn(idx);
+      this.scheduleBotTurn(idx, true);
     }
   }
 
@@ -269,6 +295,7 @@ export class ZhajinhuaRoom implements IGameRoom {
     const idx = this.seatOf(playerId);
     if (idx === -1) return;
     this.seats[idx]!.disconnected = false;
+    this.seats[idx]!.trusteeship = false;
     this.sendSnapshotToPlayer(playerId);
     this.broadcastSnapshot();
   }
@@ -277,12 +304,26 @@ export class ZhajinhuaRoom implements IGameRoom {
     const idx = this.seatOf(playerId);
     if (idx === -1) return;
 
+    if (event === 'c2s_toggle_trusteeship') {
+      const seat = this.seats[idx]!;
+      const data = (payload || {}) as { trusteeship?: boolean };
+      seat.trusteeship =
+        data.trusteeship !== undefined ? Boolean(data.trusteeship) : !seat.trusteeship;
+      this.broadcastSnapshot();
+      if (seat.trusteeship && this.phase === 'BETTING' && this.turnOpen && this.currentTurnSeat === idx) {
+        this.scheduleBotTurn(idx, true);
+      }
+      return;
+    }
+
     if (event === 'c2s_zjh_action') {
       const seat = this.seats[idx]!;
+      seat.disconnected = false;
       seat.trusteeship = false;
       this.state[idx].afkCount = 0;
       this.performAction(idx, (payload ?? {}) as ZjhActionPayload, false);
     } else if (event === 'c2s_zjh_ready') {
+      this.seats[idx]!.disconnected = false;
       this.seats[idx]!.trusteeship = false;
       this.state[idx].afkCount = 0;
       this.broadcastSnapshot();

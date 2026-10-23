@@ -197,6 +197,35 @@ export class MahjongRoom implements IGameRoom {
     return true;
   }
 
+  replaceBotWithHuman(player: {
+    playerId: string;
+    nickname: string;
+    avatarId: string;
+    beans: number;
+  }): boolean {
+    if (this.phase !== 'WAITING' && this.phase !== 'SETTLEMENT') return false;
+    const botIdx = this.seats.findIndex((s) => s?.isBot);
+    if (botIdx === -1) return false;
+    this.seats[botIdx] = {
+      playerId: player.playerId,
+      nickname: player.nickname,
+      avatarId: player.avatarId,
+      beans: player.beans,
+      isBot: false,
+      seatIndex: botIdx,
+      ready: true,
+      disconnected: false,
+      trusteeship: false,
+    };
+    this.broadcastSnapshot();
+    return true;
+  }
+
+  private isAutoActSeat(seatId: number): boolean {
+    const p = this.seats[seatId];
+    return Boolean(p && (p.isBot || p.disconnected || p.trusteeship));
+  }
+
   autoFillBotsAndStart(): void {
     while (this.getPlayerCount() < this.maxPlayers) {
       this.addBotPlayer();
@@ -263,8 +292,7 @@ export class MahjongRoom implements IGameRoom {
         this.broadcastSnapshot();
 
         for (let s = 0; s < 4; s++) {
-          const player = this.seats[s];
-          if (player?.isBot) {
+          if (this.isAutoActSeat(s)) {
             this.dingQueSuits[s] = MahjongBotEngine.decideDingQue(this.hands[s], this.playMode);
           }
         }
@@ -379,7 +407,7 @@ export class MahjongRoom implements IGameRoom {
       source: 'SERVER',
     });
 
-    if (player?.isBot) {
+    if (this.isAutoActSeat(seatId)) {
       this.scheduleBotTurn(seatId);
     }
   }
@@ -538,10 +566,9 @@ export class MahjongRoom implements IGameRoom {
       this.resolveDiscardResponses();
     }, 9000);
 
-    // AI bot automatic response scheduling (commercial standard 950ms ~ 1100ms)
+    // AI bot or disconnected/trusteeship player automatic response scheduling (950ms ~ 1100ms)
     this.pendingResponders.forEach((s) => {
-      const p = this.seats[s];
-      if (p?.isBot) {
+      if (this.isAutoActSeat(s)) {
         const acts = this.pendingActions.get(s) || [];
         setTimeout(() => {
           if (!this.pendingResponders.has(s)) return;
@@ -1239,15 +1266,66 @@ export class MahjongRoom implements IGameRoom {
     }
   }
 
+  private triggerAutoTakeoverIfNeeded(seatId: number): void {
+    if (!this.isAutoActSeat(seatId)) return;
+    if (this.phase === 'DING_QUE' && this.dingQueSuits[seatId] === null) {
+      const suit = MahjongBotEngine.decideDingQue(this.hands[seatId], this.playMode);
+      const p = this.seats[seatId];
+      if (p) this.handlePlayerDingQue(p.playerId, suit);
+    } else if (this.phase === 'PLAYING') {
+      if (this.pendingResponders.has(seatId)) {
+        const acts = this.pendingActions.get(seatId) || [];
+        const targetTile = this.latestDiscard?.tileId ?? 0;
+        setTimeout(() => {
+          if (!this.pendingResponders.has(seatId)) return;
+          const act = MahjongBotEngine.decideAction(acts);
+          this.submitPlayerResponse(seatId, act || { actionType: 'pass', targetTile });
+        }, 850);
+      } else if (this.currentTurnSeatId === seatId) {
+        this.scheduleBotTurn(seatId);
+      }
+    }
+  }
+
   handlePlayerReconnect(playerId: string): void {
+    const seat = this.seats.find((s) => s?.playerId === playerId);
+    if (seat) {
+      seat.disconnected = false;
+      seat.trusteeship = false;
+    }
     this.sendSnapshotToPlayer(playerId);
+    this.broadcastSnapshot();
   }
 
   handlePlayerDisconnect(playerId: string): void {
-    // Bot takes over on disconnect
+    const seatId = this.seats.findIndex((s) => s?.playerId === playerId);
+    if (seatId === -1 || !this.seats[seatId]) return;
+    this.seats[seatId]!.disconnected = true;
+    this.seats[seatId]!.trusteeship = true;
+    this.broadcastSnapshot();
+    this.triggerAutoTakeoverIfNeeded(seatId);
   }
 
   handleClientEvent(playerId: string, event: string, payload: unknown): void {
+    const seatId = this.seats.findIndex((s) => s?.playerId === playerId);
+    if (seatId !== -1 && this.seats[seatId] && event !== 'c2s_toggle_trusteeship') {
+      this.seats[seatId]!.disconnected = false;
+      this.seats[seatId]!.trusteeship = false;
+    }
+
+    if (event === 'c2s_toggle_trusteeship') {
+      if (seatId !== -1 && this.seats[seatId]) {
+        const data = (payload || {}) as { trusteeship?: boolean };
+        this.seats[seatId]!.trusteeship =
+          data.trusteeship !== undefined ? Boolean(data.trusteeship) : !this.seats[seatId]!.trusteeship;
+        this.broadcastSnapshot();
+        if (this.seats[seatId]!.trusteeship) {
+          this.triggerAutoTakeoverIfNeeded(seatId);
+        }
+      }
+      return;
+    }
+
     if (event === 'c2s_mj_dingque') {
       const p = payload as { suit: MahjongSuit };
       this.handlePlayerDingQue(playerId, p.suit);

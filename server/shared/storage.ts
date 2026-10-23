@@ -14,6 +14,27 @@ export interface UserProfile {
   createdAt: number;
 }
 
+export type BeanLedgerReason =
+  | 'INITIAL_GRANT'
+  | 'BANKRUPTCY_RELIEF'
+  | 'FREE_SUPPLY'
+  | 'ROOM_CREATE'
+  | 'ROUND_SETTLEMENT'
+  | 'REALTIME_TRANSFER';
+
+export interface BeanLedgerEntry {
+  id: string;
+  playerId: string;
+  roomId?: string;
+  gameType?: string;
+  deltaBeans: number;
+  balanceAfter: number;
+  deltaRoomCards?: number;
+  roomCardsAfter?: number;
+  reason: BeanLedgerReason;
+  timestamp: number;
+}
+
 export interface MatchRecord {
   id: string;
   roomId: string;
@@ -38,9 +59,13 @@ interface PersistedData {
   users: Record<string, UserProfile>;
   matches: MatchRecord[];
   replays?: Record<string, MatchReplayRecord>;
+  ledger?: BeanLedgerEntry[];
 }
 
 const DATA_FILE = path.resolve(process.cwd(), '.game-data.json');
+const TMP_DATA_FILE = path.resolve(process.cwd(), '.game-data.json.tmp');
+const SAVE_DEBOUNCE_MS = 300;
+const MAX_LEDGER_ENTRIES = 300;
 
 const SEED_NAMES = [
   '长安棋圣',
@@ -56,11 +81,19 @@ export class StorageService {
     users: {},
     matches: [],
     replays: {},
+    ledger: [],
   };
+
+  private saveTimer: NodeJS.Timeout | null = null;
+  private isWritingAsync = false;
+  private hasPendingWrite = false;
+  private totalAtomicFlushes = 0;
+  private lastFlushAt: number | null = null;
 
   constructor() {
     this.load();
     this.ensureSeedLeaderboard();
+    this.registerExitHooks();
   }
 
   private load(): void {
@@ -73,6 +106,7 @@ export class StorageService {
             users: parsed.users,
             matches: parsed.matches,
             replays: parsed.replays ?? {},
+            ledger: Array.isArray(parsed.ledger) ? parsed.ledger : [],
           };
         }
       }
@@ -81,11 +115,86 @@ export class StorageService {
     }
   }
 
+  /**
+   * Non-blocking 300ms debounced atomic write-behind (.game-data.json.tmp -> rename).
+   * Prevents event-loop stalls during high-frequency game actions & settlements.
+   */
   private save(): void {
+    this.hasPendingWrite = true;
+    if (this.saveTimer) return;
+
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.flushAsync();
+    }, SAVE_DEBOUNCE_MS);
+  }
+
+  private async flushAsync(): Promise<void> {
+    if (this.isWritingAsync || !this.hasPendingWrite) return;
+    this.isWritingAsync = true;
+    this.hasPendingWrite = false;
+
     try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(this.data, null, 2), 'utf-8');
+      const payload = JSON.stringify(this.data, null, 2);
+      await fs.promises.writeFile(TMP_DATA_FILE, payload, 'utf-8');
+      await fs.promises.rename(TMP_DATA_FILE, DATA_FILE);
+      this.totalAtomicFlushes += 1;
+      this.lastFlushAt = Date.now();
     } catch {
       // Ignore write errors in read-only environments
+    } finally {
+      this.isWritingAsync = false;
+      if (this.hasPendingWrite) {
+        this.save();
+      }
+    }
+  }
+
+  flushSync(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (!this.hasPendingWrite) return;
+    this.hasPendingWrite = false;
+    try {
+      const payload = JSON.stringify(this.data, null, 2);
+      fs.writeFileSync(TMP_DATA_FILE, payload, 'utf-8');
+      fs.renameSync(TMP_DATA_FILE, DATA_FILE);
+      this.totalAtomicFlushes += 1;
+      this.lastFlushAt = Date.now();
+    } catch {
+      // Ignore write errors on exit
+    }
+  }
+
+  private registerExitHooks(): void {
+    const onExit = () => {
+      this.flushSync();
+    };
+    process.once('exit', onExit);
+    process.once('SIGINT', () => {
+      this.flushSync();
+      process.exit(0);
+    });
+    process.once('SIGTERM', () => {
+      this.flushSync();
+      process.exit(0);
+    });
+  }
+
+  private appendLedger(entry: Omit<BeanLedgerEntry, 'id' | 'timestamp'>): void {
+    if (!this.data.ledger) {
+      this.data.ledger = [];
+    }
+    const record: BeanLedgerEntry = {
+      ...entry,
+      id: `led_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+    };
+    this.data.ledger.unshift(record);
+    if (this.data.ledger.length > MAX_LEDGER_ENTRIES) {
+      this.data.ledger.length = MAX_LEDGER_ENTRIES;
     }
   }
 
@@ -122,7 +231,14 @@ export class StorageService {
         existing.avatarId = avatarId;
       }
       if (existing.beans < 1000) {
+        const delta = 5000 - existing.beans;
         existing.beans = 5000;
+        this.appendLedger({
+          playerId,
+          deltaBeans: delta,
+          balanceAfter: existing.beans,
+          reason: 'BANKRUPTCY_RELIEF',
+        });
       }
       this.save();
       return existing;
@@ -141,6 +257,14 @@ export class StorageService {
       createdAt: Date.now(),
     };
     this.data.users[playerId] = profile;
+    this.appendLedger({
+      playerId,
+      deltaBeans: 12000,
+      balanceAfter: 12000,
+      deltaRoomCards: 10,
+      roomCardsAfter: 10,
+      reason: 'INITIAL_GRANT',
+    });
     this.save();
     return profile;
   }
@@ -162,18 +286,44 @@ export class StorageService {
     return u;
   }
 
-  consumeRoomCard(playerId: string, count = 1): boolean {
+  consumeRoomCard(playerId: string, count = 1, roomId?: string, gameType?: string): boolean {
     const u = this.data.users[playerId];
     if (!u || u.roomCards < count) return false;
     u.roomCards -= count;
+    this.appendLedger({
+      playerId,
+      roomId,
+      gameType,
+      deltaBeans: 0,
+      balanceAfter: u.beans,
+      deltaRoomCards: -count,
+      roomCardsAfter: u.roomCards,
+      reason: 'ROOM_CREATE',
+    });
     this.save();
     return true;
   }
 
-  updateBeans(playerId: string, delta: number): number {
+  updateBeans(
+    playerId: string,
+    delta: number,
+    meta?: { roomId?: string; gameType?: string; reason?: BeanLedgerReason }
+  ): number {
     const u = this.data.users[playerId];
     if (!u) return 0;
+    const prev = u.beans;
     u.beans = Math.max(0, u.beans + delta);
+    const actualDelta = u.beans - prev;
+    if (actualDelta !== 0) {
+      this.appendLedger({
+        playerId,
+        roomId: meta?.roomId,
+        gameType: meta?.gameType,
+        deltaBeans: actualDelta,
+        balanceAfter: u.beans,
+        reason: meta?.reason ?? 'REALTIME_TRANSFER',
+      });
+    }
     this.save();
     return u.beans;
   }
@@ -181,11 +331,25 @@ export class StorageService {
   claimFreeSupply(playerId: string): UserProfile | null {
     const u = this.data.users[playerId];
     if (!u) return null;
+    let deltaBeans = 0;
+    let deltaCards = 0;
     if (u.beans < 3000) {
       u.beans += 5000;
+      deltaBeans = 5000;
     }
     if (u.roomCards < 3) {
       u.roomCards += 5;
+      deltaCards = 5;
+    }
+    if (deltaBeans > 0 || deltaCards > 0) {
+      this.appendLedger({
+        playerId,
+        deltaBeans,
+        balanceAfter: u.beans,
+        deltaRoomCards: deltaCards || undefined,
+        roomCardsAfter: u.roomCards,
+        reason: 'FREE_SUPPLY',
+      });
     }
     this.save();
     return u;
@@ -213,7 +377,26 @@ export class StorageService {
       const u = this.data.users[r.playerId];
       if (u) {
         if (!skipBeanUpdate) {
+          const prev = u.beans;
           u.beans = Math.max(0, u.beans + r.scoreDelta);
+          const actualDelta = u.beans - prev;
+          this.appendLedger({
+            playerId: r.playerId,
+            roomId,
+            gameType,
+            deltaBeans: actualDelta,
+            balanceAfter: u.beans,
+            reason: 'ROUND_SETTLEMENT',
+          });
+        } else if (r.scoreDelta !== 0) {
+          this.appendLedger({
+            playerId: r.playerId,
+            roomId,
+            gameType,
+            deltaBeans: r.scoreDelta,
+            balanceAfter: u.beans,
+            reason: 'ROUND_SETTLEMENT',
+          });
         }
         u.gamesPlayed += 1;
         if (r.isWinner) {
@@ -281,6 +464,30 @@ export class StorageService {
     return this.data.matches
       .filter((m) => m.players.some((p) => p.playerId === playerId))
       .slice(0, limit);
+  }
+
+  getPlayerLedger(playerId: string, limit = 25): BeanLedgerEntry[] {
+    return (this.data.ledger ?? [])
+      .filter((entry) => entry.playerId === playerId)
+      .slice(0, limit);
+  }
+
+  getStorageStats(): {
+    totalUsers: number;
+    totalMatchesStored: number;
+    totalLedgerEntries: number;
+    totalAtomicFlushes: number;
+    lastFlushAt: number | null;
+    hasPendingWrite: boolean;
+  } {
+    return {
+      totalUsers: Object.keys(this.data.users).length,
+      totalMatchesStored: this.data.matches.length,
+      totalLedgerEntries: (this.data.ledger ?? []).length,
+      totalAtomicFlushes: this.totalAtomicFlushes,
+      lastFlushAt: this.lastFlushAt,
+      hasPendingWrite: this.hasPendingWrite,
+    };
   }
 }
 

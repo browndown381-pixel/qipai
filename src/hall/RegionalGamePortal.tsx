@@ -9,6 +9,7 @@ export interface RegionalGamePortalProps {
   onEnterMahjongHall: () => void;
   onEnterNiuniuHall?: () => void;
   onEnterZjhHall?: () => void;
+  onEnterLaoYanCaiHall?: () => void;
   onQuickStartDdz: () => void;
   onQuickStartMahjong?: () => void;
   onQuickStartGame?: (gameKey: GameKey, baseScore: number) => void;
@@ -104,6 +105,7 @@ export const RegionalGamePortal: React.FC<RegionalGamePortalProps> = ({
   onEnterMahjongHall,
   onEnterNiuniuHall,
   onEnterZjhHall,
+  onEnterLaoYanCaiHall,
   onQuickStartDdz,
   onQuickStartGame,
   myBeans = 12000,
@@ -173,7 +175,11 @@ export const RegionalGamePortal: React.FC<RegionalGamePortalProps> = ({
         }
         break;
       case 'laoyancai':
-        handleOpenPreview('laoyancai');
+        if (onEnterLaoYanCaiHall) {
+          onEnterLaoYanCaiHall();
+        } else {
+          handleOpenPreview('laoyancai');
+        }
         break;
       case 'shuangko':
         handleOpenPreview('shuangko');

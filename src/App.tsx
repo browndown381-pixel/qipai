@@ -1,44 +1,6 @@
 import React, { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
-
-const DdzTableView = React.lazy(() =>
-  import('./games/ddz/DdzTableView').then((m) => ({ default: m.DdzTableView }))
-);
-const MahjongTableView = React.lazy(() =>
-  import('./games/mahjong/MahjongTableView').then((m) => ({ default: m.MahjongTableView }))
-);
-const NiuniuTableView = React.lazy(() =>
-  import('./games/niuniu/NiuniuTableView').then((m) => ({ default: m.NiuniuTableView }))
-);
-
-const ZhajinhuaTableView = React.lazy(() =>
-  import('./games/zhajinhua/ZhajinhuaTableView').then((m) => ({ default: m.ZhajinhuaTableView }))
-);
-
-const GameLoadingFallback: React.FC<{ gameType: string | null }> = ({ gameType }) => {
-  const getGameLabel = () => {
-    if (gameType === 'mahjong') return '麻将';
-    if (gameType === 'niuniu') return '抢庄牛牛';
-    if (gameType === 'zhajinhua') return '炸金花';
-    return '斗地主';
-  };
-  return (
-    <div className="flex h-full w-full flex-col items-center justify-center bg-[#07150e] text-amber-200 select-none">
-      <div className="relative flex flex-col items-center gap-3">
-        <div className="relative flex h-16 w-16 items-center justify-center">
-          <div className="absolute inset-0 rounded-full border-2 border-amber-400/20 animate-ping" />
-          <Loader2 className="h-10 w-10 animate-spin text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.6)]" />
-        </div>
-        <span className="font-display text-base font-black tracking-wider text-amber-300 drop-shadow">
-          正在进入 {getGameLabel()} 对局
-        </span>
-        <span className="text-xs font-serif text-amber-200/60 tracking-widest">
-          加载游戏引擎与商业牌桌算法...
-        </span>
-      </div>
-    </div>
-  );
-};
+import { getAllCardTexturePaths, preloadAllCardTextures } from './games/ddz/assets/CardAtlasGenerator';
 import { DealMode } from './games/ddz/types';
 import {
   HallView,
@@ -53,6 +15,330 @@ import {
   exitUniversalFullscreen,
   detectFullscreenCapabilities,
 } from './shared/utils/fullscreenHelper';
+
+const DdzTableView = React.lazy(() =>
+  import('./games/ddz/DdzTableView').then((m) => ({ default: m.DdzTableView }))
+);
+const MahjongTableView = React.lazy(() =>
+  import('./games/mahjong/MahjongTableView').then((m) => ({ default: m.MahjongTableView }))
+);
+const NiuniuTableView = React.lazy(() =>
+  import('./games/niuniu/NiuniuTableView').then((m) => ({ default: m.NiuniuTableView }))
+);
+const ZhajinhuaTableView = React.lazy(() =>
+  import('./games/zhajinhua/ZhajinhuaTableView').then((m) => ({ default: m.ZhajinhuaTableView }))
+);
+const LaoYanCaiTableView = React.lazy(() =>
+  import('./games/laoyancai/LaoYanCaiTableView').then((m) => ({ default: m.LaoYanCaiTableView }))
+);
+
+// ============================================================================
+// LocalStorage Keys & Safe Persistence Helpers
+// ============================================================================
+const STORAGE_KEY_PROFILE = 'h5_game_user_profile';
+const STORAGE_KEY_ACTIVE_ROOM_ID = 'h5_game_active_room_id';
+const STORAGE_KEY_ACTIVE_GAME_TYPE = 'h5_game_active_game_type';
+
+function loadPersistedProfile(): UserProfile | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_PROFILE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UserProfile;
+    if (parsed && typeof parsed.playerId === 'string' && typeof parsed.nickname === 'string') {
+      return parsed;
+    }
+  } catch {
+    // Ignore malformed localStorage data
+  }
+  return null;
+}
+
+function savePersistedProfile(profile: UserProfile | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (profile) {
+      localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(profile));
+      localStorage.setItem('h5_game_nickname', profile.nickname);
+      localStorage.setItem('h5_game_avatar', profile.avatarId);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_PROFILE);
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function loadPersistedRoomState(): { roomId: string | null; gameType: string | null } {
+  if (typeof window === 'undefined') return { roomId: null, gameType: null };
+  try {
+    const roomId = localStorage.getItem(STORAGE_KEY_ACTIVE_ROOM_ID);
+    const gameType = localStorage.getItem(STORAGE_KEY_ACTIVE_GAME_TYPE);
+    if (roomId && roomId.trim().length > 0) {
+      return { roomId, gameType: gameType || 'ddz' };
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return { roomId: null, gameType: null };
+}
+
+function savePersistedRoomState(roomId: string | null, gameType: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (roomId) {
+      localStorage.setItem(STORAGE_KEY_ACTIVE_ROOM_ID, roomId);
+      if (gameType) {
+        localStorage.setItem(STORAGE_KEY_ACTIVE_GAME_TYPE, gameType);
+      }
+    } else {
+      localStorage.removeItem(STORAGE_KEY_ACTIVE_ROOM_ID);
+      localStorage.removeItem(STORAGE_KEY_ACTIVE_GAME_TYPE);
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+// ============================================================================
+// Asset Manifest & Preloader for Smooth GameLoadingFallback Progress
+// ============================================================================
+interface GameAssetManifest {
+  images: string[];
+  audios: string[];
+}
+
+function getGameAssetManifest(gameType: string | null): GameAssetManifest {
+  if (gameType === 'mahjong') {
+    return {
+      images: [
+        '/assets/avatars/kashen.svg',
+        '/assets/avatars/beier.svg',
+        '/assets/avatars/scholar.svg',
+        '/assets/avatars/noble.svg',
+      ],
+      audios: [
+        '/assets/mahjong/audio/Sepcial_Mahjong_Deal.wav',
+        '/assets/mahjong/audio/Sepcial_Mahjong_DrawCard.wav',
+        '/assets/mahjong/audio/Sepcial_Mahjong_GiveCard.wav',
+        '/assets/mahjong/audio/Sepcial_Mahjong_BeanFly.wav',
+        '/assets/mahjong/audio/Sepcial_Mahjong_Win.wav',
+        '/assets/mahjong/audio/Sepcial_Mahjong_Win_Zimo.wav',
+        '/assets/mahjong/audio/voice/female/peng.mp3',
+        '/assets/mahjong/audio/voice/female/gang.mp3',
+        '/assets/mahjong/audio/voice/female/hu.mp3',
+        '/assets/mahjong/audio/voice/female/zimo.mp3',
+        '/assets/mahjong/audio/voice/male/peng.mp3',
+        '/assets/mahjong/audio/voice/male/gang.mp3',
+        '/assets/mahjong/audio/voice/male/hu.mp3',
+        '/assets/mahjong/audio/voice/male/zimo.mp3',
+      ],
+    };
+  }
+
+  if (gameType === 'niuniu' || gameType === 'zhajinhua' || gameType === 'laoyancai') {
+    const cardSample = getAllCardTexturePaths().slice(0, 16);
+    return {
+      images: [
+        ...cardSample,
+        '/assets/avatars/kashen.svg',
+        '/assets/avatars/beier.svg',
+        '/assets/avatars/scholar.svg',
+        '/assets/avatars/noble.svg',
+      ],
+      audios: [
+        '/assets/mahjong/audio/Sepcial_Mahjong_Deal.wav',
+        '/assets/audio/ddz/Special_Dispatch_2D.wav',
+        '/assets/audio/ddz/Special_Discard.wav',
+      ],
+    };
+  }
+
+  // Default: Dou Dizhu ('ddz')
+  const cardPaths = getAllCardTexturePaths();
+  return {
+    images: cardPaths,
+    audios: [
+      '/assets/audio/ddz/Special_Dispatch_2D.wav',
+      '/assets/audio/ddz/Special_Discard.wav',
+      '/assets/audio/ddz/Special_Bomb_New.wav',
+      '/assets/audio/ddz/Special_plane.wav',
+      '/assets/audio/ddz/Special_Chuntian.wav',
+      '/assets/audio/ddz/Special_querendizhu.wav',
+      '/assets/audio/ddz/Special_alert.wav',
+      '/assets/audio/ddz/shunzi.wav',
+      '/assets/audio/ddz/liandui.wav',
+      '/assets/audio/ddz/feiji.wav',
+      '/assets/audio/ddz/zhadan.wav',
+      '/assets/audio/ddz/wangzha.wav',
+    ],
+  };
+}
+
+function preloadSingleImage(url: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof Image === 'undefined') {
+      resolve();
+      return;
+    }
+    const img = new Image();
+    const done = () => resolve();
+    img.onload = done;
+    img.onerror = done;
+    img.src = url;
+  });
+}
+
+export const GameLoadingFallback: React.FC<{
+  gameType: string | null;
+  onFinishLoading?: () => void;
+}> = ({ gameType, onFinishLoading }) => {
+  const [loadedCount, setLoadedCount] = useState<number>(0);
+  const [totalCount, setTotalCount] = useState<number>(1);
+  const [displayProgress, setDisplayProgress] = useState<number>(0);
+  const targetProgressRef = useRef<number>(8);
+  const currentProgressRef = useRef<number>(0);
+  const finishedTriggeredRef = useRef<boolean>(false);
+
+  const getGameLabel = () => {
+    if (gameType === 'mahjong') return '麻将';
+    if (gameType === 'niuniu') return '抢庄牛牛';
+    if (gameType === 'zhajinhua') return '炸金花';
+    if (gameType === 'laoyancai') return '云南捞腌菜';
+    return '斗地主';
+  };
+
+  // Preload actual game textures & audio buffers and update target completion percentage
+  useEffect(() => {
+    let cancelled = false;
+    finishedTriggeredRef.current = false;
+    currentProgressRef.current = 0;
+    targetProgressRef.current = 8;
+    setDisplayProgress(0);
+
+    const manifest = getGameAssetManifest(gameType);
+    const total = Math.max(1, manifest.images.length + manifest.audios.length);
+    setTotalCount(total);
+    setLoadedCount(0);
+
+    if (gameType === 'ddz' || !gameType) {
+      preloadAllCardTextures().catch(() => {});
+    }
+
+    let completed = 0;
+    const markOneLoaded = () => {
+      if (cancelled) return;
+      completed += 1;
+      setLoadedCount(completed);
+      const pct = Math.min(100, Math.round((completed / total) * 100));
+      targetProgressRef.current = Math.max(targetProgressRef.current, pct);
+    };
+
+    manifest.images.forEach((imgUrl) => {
+      preloadSingleImage(imgUrl).then(markOneLoaded);
+    });
+
+    manifest.audios.forEach((audioUrl) => {
+      soundEngine
+        .loadAudioBuffer(audioUrl)
+        .catch(() => null)
+        .then(markOneLoaded);
+    });
+
+    // Safety fallback so bad network assets never stall the progress bar
+    const safetyTimer = window.setTimeout(() => {
+      if (!cancelled) {
+        targetProgressRef.current = 100;
+        setLoadedCount(total);
+      }
+    }, 1200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(safetyTimer);
+    };
+  }, [gameType]);
+
+  // Smooth requestAnimationFrame interpolation toward target asset loading percentage
+  useEffect(() => {
+    let rafId: number | null = null;
+
+    const step = () => {
+      const current = currentProgressRef.current;
+      const target = targetProgressRef.current;
+      const diff = target - current;
+
+      if (Math.abs(diff) <= 0.35) {
+        currentProgressRef.current = target;
+        setDisplayProgress(target);
+        if (target >= 100 && !finishedTriggeredRef.current) {
+          finishedTriggeredRef.current = true;
+          onFinishLoading?.();
+          return;
+        }
+      } else {
+        // Smooth damping step with guaranteed minimum forward velocity
+        const delta = Math.max(diff * 0.22, 1.4);
+        const next = Math.min(target, current + delta);
+        currentProgressRef.current = next;
+        setDisplayProgress(next);
+      }
+
+      rafId = requestAnimationFrame(step);
+    };
+
+    rafId = requestAnimationFrame(step);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [onFinishLoading]);
+
+  const roundedPct = Math.min(100, Math.max(0, Math.round(displayProgress)));
+  const getStageDescription = () => {
+    if (roundedPct < 35) return '正在载入高清牌面纹理与国风桌布材质...';
+    if (roundedPct < 75) return '正在预解码零延迟多轨音效与真人报牌语音...';
+    if (roundedPct < 98) return '正在初始化商业牌桌算法与同步房间快照...';
+    return '资源准备就绪，即将进入牌桌...';
+  };
+
+  return (
+    <div className="flex h-full w-full flex-col items-center justify-center bg-[#07150e] px-6 text-amber-200 select-none">
+      <div className="relative flex w-full max-w-md flex-col items-center gap-3.5 rounded-2xl border border-amber-400/20 bg-black/35 px-7 py-6 shadow-[0_20px_50px_rgba(0,0,0,0.65)] backdrop-blur-md">
+        <div className="relative flex h-14 w-14 items-center justify-center">
+          <div className="absolute inset-0 rounded-full border-2 border-amber-400/25 animate-ping" />
+          <Loader2 className="h-9 w-9 animate-spin text-amber-400 drop-shadow-[0_0_12px_rgba(251,191,36,0.6)]" />
+        </div>
+
+        <div className="flex flex-col items-center gap-1">
+          <span className="font-display text-base font-black tracking-wider text-amber-300 drop-shadow">
+            正在进入 {getGameLabel()} 对局
+          </span>
+          <span className="text-xs font-serif text-amber-200/70 tracking-wider">
+            {getStageDescription()}
+          </span>
+        </div>
+
+        {/* Smooth Asset-Driven Progress Bar */}
+        <div className="mt-1 w-full">
+          <div className="mb-1.5 flex items-center justify-between text-xs">
+            <span className="text-amber-200/65 font-medium tracking-wide">
+              资源加载 ({Math.min(loadedCount, totalCount)}/{totalCount})
+            </span>
+            <span className="font-mono font-bold tabular-nums text-amber-300">
+              {roundedPct}%
+            </span>
+          </div>
+          <div className="relative h-2.5 w-full overflow-hidden rounded-full border border-amber-400/25 bg-[#030b07] p-0.5 shadow-inner">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-amber-400 to-amber-300 shadow-[0_0_12px_rgba(251,191,36,0.55)] transition-[width] duration-75 ease-out"
+              style={{ width: `${roundedPct}%` }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 export type ResolutionTier = 'compact_mobile' | 'wide_mobile' | 'ultrawide' | 'tablet_desktop';
 
@@ -273,15 +559,12 @@ export function computeViewportMetrics(rawW?: number, rawH?: number): ViewportMe
   const width = Math.round(rawW ?? (vv ? vv.width : window.innerWidth));
   const height = Math.round(rawH ?? (vv ? vv.height : window.innerHeight));
 
-  // Normalize effective landscape dimensions so portrait-held devices using AutoLandscapeContainer
-  // and native landscape devices evaluate aspect ratio and tiers identically
   const effW = Math.max(width, height);
   const effH = Math.min(width, height);
   const aspectRatio = effH > 0 ? Number((effW / effH).toFixed(4)) : 1.78;
 
   const uiElementScale = computeSmoothUiElementScale(effW, effH);
 
-  // Continuous size parameter s in [0 .. 1] based on effective dimension ratio
   const effectiveRatio = Math.min(effW / 1100, effH / 560);
   const sRaw = Math.max(0, Math.min(1, (effectiveRatio - 0.52) / (1.0 - 0.52)));
   const s = sRaw * sRaw * (3 - 2 * sRaw);
@@ -310,7 +593,6 @@ export function computeViewportMetrics(rawW?: number, rawH?: number): ViewportMe
     baseZones = PERCENTAGE_PROFILES.tablet_desktop;
   }
 
-  // Smoothly blend toward the Ultrawide profile as aspect ratio exceeds 1.85 (18.5:9 -> 20:9 / 21:9)
   const ultraRaw = Math.max(0, Math.min(1, (aspectRatio - 1.85) / (2.22 - 1.85)));
   const ultraSmooth = ultraRaw * ultraRaw * (3 - 2 * ultraRaw);
   const zones =
@@ -365,7 +647,6 @@ export const ResponsiveLayoutContainer: React.FC<{
         return;
       }
 
-      // Smooth exponential damping across frames
       const next = Number((current + diff * 0.32).toFixed(4));
       currentScaleRef.current = next;
       const fontScale = computeSmoothUiFontScale(next);
@@ -386,7 +667,6 @@ export const ResponsiveLayoutContainer: React.FC<{
       onContainerResize?.(nextMetrics);
     };
 
-    // Initial measurement from actual DOM bounding box
     const rect = el.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       applyMeasuredSize(rect.width, rect.height);
@@ -433,15 +713,38 @@ export const ResponsiveLayoutContainer: React.FC<{
 };
 
 export default function App() {
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  // Initialize login profile and active room state from localStorage so page refresh seamlessly restores session
+  const [profile, setProfile] = useState<UserProfile | null>(() => loadPersistedProfile());
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [leaderboard, setLeaderboard] = useState<UserProfile[]>([]);
   const [matches, setMatches] = useState<MatchRecord[]>([]);
-  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
-  const [activeRoomGameType, setActiveRoomGameType] = useState<string | null>(null);
+  const [activeRoomId, setActiveRoomId] = useState<string | null>(
+    () => loadPersistedRoomState().roomId
+  );
+  const [activeRoomGameType, setActiveRoomGameType] = useState<string | null>(
+    () => loadPersistedRoomState().gameType
+  );
   const [notice, setNotice] = useState<string | null>(null);
   const [viewport, setViewport] = useState<ViewportMetrics>(() => computeViewportMetrics());
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  // Sync profile changes to localStorage
+  useEffect(() => {
+    if (profile) {
+      savePersistedProfile(profile);
+    }
+  }, [profile]);
+
+  // Sync activeRoomId & activeRoomGameType changes to localStorage
+  useEffect(() => {
+    savePersistedRoomState(activeRoomId, activeRoomGameType);
+  }, [activeRoomId, activeRoomGameType]);
+
+  const leaveCurrentRoom = useCallback(() => {
+    setActiveRoomId(null);
+    setActiveRoomGameType(null);
+    savePersistedRoomState(null, null);
+  }, []);
 
   const showNotice = useCallback((msg: string) => {
     setNotice(msg);
@@ -506,14 +809,37 @@ export default function App() {
       socketClient.on('s2c_auth_success', (data) => {
         if (data.profile) {
           setProfile(data.profile);
+          savePersistedProfile(data.profile);
         }
+        const serverRooms: RoomSummary[] = Array.isArray(data.rooms) ? data.rooms : [];
         if (Array.isArray(data.rooms)) {
           setRooms(data.rooms);
         }
+
         if (data.activeRoomId) {
+          // Server still holds player in their active room: restore & request latest table snapshot
           setActiveRoomId(data.activeRoomId);
           if (data.activeGameType) {
             setActiveRoomGameType(data.activeGameType);
+          }
+          socketClient.emit('c2s_request_snapshot');
+        } else {
+          // Check if localStorage had an active room before refresh that we can rejoin/recover
+          const persisted = loadPersistedRoomState();
+          if (persisted.roomId) {
+            const roomStillExists = serverRooms.some((r) => r.roomId === persisted.roomId);
+            if (roomStillExists) {
+              socketClient.emit('c2s_join_room', { roomId: persisted.roomId });
+            } else if (persisted.gameType) {
+              // Automatically recover session into the same game type so refresh never strands user
+              socketClient.emit('c2s_quick_match', {
+                gameType: persisted.gameType,
+                baseScore: 100,
+                fillBots: true,
+              });
+            } else {
+              leaveCurrentRoom();
+            }
           }
         }
         socketClient.emit('c2s_get_lobby_data');
@@ -522,7 +848,10 @@ export default function App() {
 
     unsubs.push(
       socketClient.on('s2c_lobby_data', (data) => {
-        if (data.profile) setProfile(data.profile);
+        if (data.profile) {
+          setProfile(data.profile);
+          savePersistedProfile(data.profile);
+        }
         if (Array.isArray(data.rooms)) setRooms(data.rooms);
         if (Array.isArray(data.leaderboard)) setLeaderboard(data.leaderboard);
         if (Array.isArray(data.matches)) setMatches(data.matches);
@@ -533,8 +862,7 @@ export default function App() {
       socketClient.on('s2c_profile_updated', (data) => {
         if (data.profile) {
           setProfile(data.profile);
-          localStorage.setItem('h5_game_nickname', data.profile.nickname);
-          localStorage.setItem('h5_game_avatar', data.profile.avatarId);
+          savePersistedProfile(data.profile);
         }
         if (data.notice) {
           showNotice(data.notice);
@@ -562,10 +890,12 @@ export default function App() {
 
     unsubs.push(
       socketClient.on('s2c_left_room', (data) => {
-        setActiveRoomId(null);
-        setActiveRoomGameType(null);
+        leaveCurrentRoom();
         soundEngine.startBgm('lobby');
-        if (data?.profile) setProfile(data.profile);
+        if (data?.profile) {
+          setProfile(data.profile);
+          savePersistedProfile(data.profile);
+        }
         if (Array.isArray(data?.rooms)) setRooms(data.rooms);
         socketClient.emit('c2s_get_lobby_data');
       })
@@ -582,7 +912,7 @@ export default function App() {
     return () => {
       unsubs.forEach((fn) => fn());
     };
-  }, [showNotice]);
+  }, [leaveCurrentRoom, showNotice]);
 
   const handleQuickMatch = (
     baseScore: number,
@@ -623,6 +953,18 @@ export default function App() {
     setActiveRoomId('room_zhajinhua_quick');
     socketClient.emit('c2s_quick_match', {
       gameType: 'zhajinhua',
+      baseScore,
+      fillBots: true,
+      mode,
+    });
+  };
+
+  const handleQuickMatchLaoYanCai = (baseScore = 100, mode = 'kunming') => {
+    soundEngine.playTap(720);
+    setActiveRoomGameType('laoyancai');
+    setActiveRoomId('room_laoyancai_quick');
+    socketClient.emit('c2s_quick_match', {
+      gameType: 'laoyancai',
       baseScore,
       fillBots: true,
       mode,
@@ -682,8 +1024,7 @@ export default function App() {
               isFullscreen={isFullscreen}
               onToggleFullscreen={handleToggleFullscreen}
               onLeaveRoom={() => {
-                setActiveRoomId(null);
-                setActiveRoomGameType(null);
+                leaveCurrentRoom();
                 exitUniversalFullscreen().catch(() => {});
                 soundEngine.startBgm('lobby');
                 socketClient.emit('c2s_get_lobby_data');
@@ -695,8 +1036,7 @@ export default function App() {
               isFullscreen={isFullscreen}
               onToggleFullscreen={handleToggleFullscreen}
               onLeaveRoom={() => {
-                setActiveRoomId(null);
-                setActiveRoomGameType(null);
+                leaveCurrentRoom();
                 exitUniversalFullscreen().catch(() => {});
                 soundEngine.startBgm('lobby');
                 socketClient.emit('c2s_get_lobby_data');
@@ -708,8 +1048,19 @@ export default function App() {
               isFullscreen={isFullscreen}
               onToggleFullscreen={handleToggleFullscreen}
               onLeaveRoom={() => {
-                setActiveRoomId(null);
-                setActiveRoomGameType(null);
+                leaveCurrentRoom();
+                exitUniversalFullscreen().catch(() => {});
+                soundEngine.startBgm('lobby');
+                socketClient.emit('c2s_get_lobby_data');
+              }}
+            />
+          ) : activeRoomGameType === 'laoyancai' ? (
+            <LaoYanCaiTableView
+              viewport={viewport}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={handleToggleFullscreen}
+              onLeaveRoom={() => {
+                leaveCurrentRoom();
                 exitUniversalFullscreen().catch(() => {});
                 soundEngine.startBgm('lobby');
                 socketClient.emit('c2s_get_lobby_data');
@@ -721,8 +1072,7 @@ export default function App() {
               isFullscreen={isFullscreen}
               onToggleFullscreen={handleToggleFullscreen}
               onLeaveRoom={() => {
-                setActiveRoomId(null);
-                setActiveRoomGameType(null);
+                leaveCurrentRoom();
                 exitUniversalFullscreen().catch(() => {});
                 soundEngine.startBgm('lobby');
                 socketClient.emit('c2s_get_lobby_data');
@@ -744,6 +1094,7 @@ export default function App() {
           onQuickMatchMahjong={handleQuickMatchMahjong}
           onQuickMatchNiuniu={handleQuickMatchNiuniu}
           onQuickMatchZhajinhua={handleQuickMatchZhajinhua}
+          onQuickMatchLaoYanCai={handleQuickMatchLaoYanCai}
           onCreateRoom={handleCreateRoom}
           onJoinRoom={handleJoinRoom}
           onRefreshLobby={handleRefreshLobby}

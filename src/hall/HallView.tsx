@@ -18,6 +18,7 @@ import { DdzArenaGrid } from './components/DdzArenaGrid';
 import { MahjongArenaGrid } from './components/MahjongArenaGrid';
 import { NiuniuArenaGrid } from './components/NiuniuArenaGrid';
 import { ZjhArenaGrid } from './components/ZjhArenaGrid';
+import { LaoYanCaiArenaGrid } from './components/LaoYanCaiArenaGrid';
 import { CommercialTierCardSpec } from './components/TierCard';
 import { InsufficientBeansModal } from './components/modals/InsufficientBeansModal';
 import { FriendRoomModal } from './components/modals/FriendRoomModal';
@@ -89,6 +90,7 @@ export interface HallViewProps {
   onQuickMatchMahjong?: (baseScore?: number, mode?: string) => void;
   onQuickMatchNiuniu?: (baseScore?: number, mode?: string) => void;
   onQuickMatchZhajinhua?: (baseScore?: number, mode?: string) => void;
+  onQuickMatchLaoYanCai?: (baseScore?: number, mode?: string) => void;
   onCreateRoom: (
     baseScore: number,
     isPrivate: boolean,
@@ -117,6 +119,7 @@ export const HallView: React.FC<HallViewProps> = ({
   onQuickMatchMahjong,
   onQuickMatchNiuniu,
   onQuickMatchZhajinhua,
+  onQuickMatchLaoYanCai,
   onCreateRoom,
   onJoinRoom,
   onRefreshLobby,
@@ -132,7 +135,14 @@ export const HallView: React.FC<HallViewProps> = ({
     }
     return false;
   }, [viewport]);
-  const [portalStage, setPortalStage] = useState<'main_portal' | 'ddz_subhall' | 'mahjong_subhall' | 'niuniu_subhall' | 'zhajinhua_subhall'>('main_portal');
+  const [portalStage, setPortalStage] = useState<
+    | 'main_portal'
+    | 'ddz_subhall'
+    | 'mahjong_subhall'
+    | 'niuniu_subhall'
+    | 'zhajinhua_subhall'
+    | 'laoyancai_subhall'
+  >('main_portal');
   const [ddzArenaMode, setDdzArenaMode] = useState<DdzArenaMode>('classic');
   const [selectedBaseScore, setSelectedBaseScore] = useState<number>(100);
   const [selectedDealMode, setSelectedDealMode] = useState<DealMode>('classic');
@@ -336,6 +346,10 @@ export const HallView: React.FC<HallViewProps> = ({
                 soundEngine.playCardPlace(true);
                 setPortalStage('zhajinhua_subhall');
               }}
+              onEnterLaoYanCaiHall={() => {
+                soundEngine.playCardPlace(true);
+                setPortalStage('laoyancai_subhall');
+              }}
               onQuickStartDdz={handleQuickStart}
               onQuickStartMahjong={() => onQuickMatchMahjong?.(100)}
               onQuickStartGame={(gameKey, baseScore) => {
@@ -346,6 +360,10 @@ export const HallView: React.FC<HallViewProps> = ({
                 }
                 if (gameKey === 'zhajinhua') {
                   onQuickMatchZhajinhua?.(baseScore, 'classic');
+                  return;
+                }
+                if (gameKey === 'laoyancai') {
+                  onQuickMatchLaoYanCai?.(baseScore, 'kunming');
                   return;
                 }
                 const titleMap: Record<string, string> = {
@@ -466,6 +484,38 @@ export const HallView: React.FC<HallViewProps> = ({
                   maxMultiplier: 20,
                   fee: 0,
                   accentColor: 'from-amber-500 to-rose-700',
+                });
+              }}
+            />
+          </div>
+        )}
+
+        {/* STAGE F: LAO YAN CAI ARENA SUB-HALL */}
+        {portalStage === 'laoyancai_subhall' && (
+          <div className="relative flex h-full min-h-0 w-full flex-1 flex-col justify-between overflow-hidden animate-in fade-in zoom-in-[0.99] duration-200">
+            <LaoYanCaiArenaGrid
+              myBeans={myBeans}
+              isMobileLandscape={isMobileLandscape}
+              onSelectTier={(baseScore, mode) => {
+                soundEngine.playCardPlace(true);
+                hapticEngine.playCard();
+                onQuickMatchLaoYanCai?.(baseScore, mode);
+              }}
+              onQuickStart={(baseScore, mode) => {
+                soundEngine.playCardPlace(true);
+                hapticEngine.playCard();
+                onQuickMatchLaoYanCai?.(baseScore || 100, mode || 'kunming');
+              }}
+              onInsufficientBeans={(tier) => {
+                setInsufficientTier({
+                  tier: 'primary',
+                  name: tier.title,
+                  badge: '捞腌菜',
+                  baseScore: tier.baseScore,
+                  minBeans: tier.minBeans,
+                  maxMultiplier: 120,
+                  fee: 0,
+                  accentColor: 'from-emerald-500 to-amber-600',
                 });
               }}
             />

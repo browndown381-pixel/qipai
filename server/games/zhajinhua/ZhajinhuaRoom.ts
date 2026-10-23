@@ -304,11 +304,64 @@ export class ZhajinhuaRoom implements IGameRoom {
     const idx = this.seatOf(playerId);
     if (idx === -1) return;
 
+    if (event === 'c2s_throw_prop') {
+      const data = (payload || {}) as { targetSeat?: number; propType?: string };
+      const targetSeat = Number(data.targetSeat);
+      const allowedProps = ['flower', 'tea', 'like', 'ingot', 'bomb_cup'];
+      const rawProp = String(data.propType ?? 'flower');
+      const propType = allowedProps.includes(rawProp) ? rawProp : 'flower';
+      if (
+        targetSeat >= 0 &&
+        targetSeat < this.maxPlayers &&
+        targetSeat !== idx &&
+        this.seats[targetSeat]
+      ) {
+        this.seats.forEach((s) => {
+          if (s && !s.isBot) {
+            this.connectionManager.emitToPlayer(s.playerId, 's2c_prop_thrown', {
+              fromSeat: idx,
+              toSeat: targetSeat,
+              propType,
+              fromNickname: this.seats[idx]!.nickname,
+              toNickname: this.seats[targetSeat]!.nickname,
+            });
+          }
+        });
+      }
+      return;
+    }
+
+    if (event === 'c2s_send_chat') {
+      const data = (payload || {}) as { text?: string; emoji?: string };
+      const text = typeof data.text === 'string' ? data.text.slice(0, 40) : '';
+      const emoji = typeof data.emoji === 'string' ? data.emoji.slice(0, 12) : undefined;
+      if (text || emoji) {
+        this.seats.forEach((s) => {
+          if (s && !s.isBot) {
+            this.connectionManager.emitToPlayer(s.playerId, 's2c_chat_message', {
+              playerId,
+              seatIndex: idx,
+              nickname: this.seats[idx]!.nickname,
+              text,
+              emoji,
+            });
+          }
+        });
+      }
+      return;
+    }
+
     if (event === 'c2s_toggle_trusteeship') {
       const seat = this.seats[idx]!;
       const data = (payload || {}) as { trusteeship?: boolean };
-      seat.trusteeship =
+      const nextTrust =
         data.trusteeship !== undefined ? Boolean(data.trusteeship) : !seat.trusteeship;
+      seat.trusteeship = nextTrust;
+      this.connectionManager.emitToPlayer(playerId, 's2c_trusteeship_changed', {
+        playerId,
+        seatIndex: idx,
+        trusteeship: nextTrust,
+      });
       this.broadcastSnapshot();
       if (seat.trusteeship && this.phase === 'BETTING' && this.turnOpen && this.currentTurnSeat === idx) {
         this.scheduleBotTurn(idx, true);
@@ -319,7 +372,14 @@ export class ZhajinhuaRoom implements IGameRoom {
     if (event === 'c2s_zjh_action') {
       const seat = this.seats[idx]!;
       seat.disconnected = false;
-      seat.trusteeship = false;
+      if (seat.trusteeship) {
+        seat.trusteeship = false;
+        this.connectionManager.emitToPlayer(playerId, 's2c_trusteeship_changed', {
+          playerId,
+          seatIndex: idx,
+          trusteeship: false,
+        });
+      }
       this.state[idx].afkCount = 0;
       this.performAction(idx, (payload ?? {}) as ZjhActionPayload, false);
     } else if (event === 'c2s_zjh_ready') {

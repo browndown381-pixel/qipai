@@ -575,7 +575,7 @@ const DdzTableStage: React.FC<DdzTableViewProps & { rotationDeg: VirtualRotation
               side === 'right' ? 'self-end' : 'self-start'
             }`}
           >
-            {bubble.emoji && <span className="text-sm">{bubble.emoji}</span>}
+            <MessageSquare className="h-3 w-3 shrink-0 text-amber-300" />
             <span className="max-w-[168px] truncate">{bubble.text}</span>
           </div>
         )}
@@ -1267,29 +1267,47 @@ const DdzTableStage: React.FC<DdzTableViewProps & { rotationDeg: VirtualRotation
                 className="w-full max-w-lg rounded-2xl border border-amber-400/40 bg-[#082E20] p-6 shadow-2xl"
               >
                 <div className="flex items-center justify-between border-b border-emerald-800/80 pb-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="font-display text-2xl font-extrabold text-amber-300">
-                        {viewState.settlement.isLandlordWin ? '地主获胜' : '农民合力获胜'}
-                      </h2>
-                      <span className="rounded-md border border-emerald-400/35 bg-emerald-900/70 px-2 py-0.5 text-[11px] font-bold text-emerald-200">
-                        {currentRoomTier.name}
-                      </span>
-                      {viewState.settlement.isCapped && (
-                        <span className="rounded-md border border-amber-300/70 bg-amber-500/25 px-2 py-0.5 text-[11px] font-extrabold text-amber-200">
-                          已触发封顶 ×{viewState.settlement.maxMultiplier}
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={
+                        (myPlayer && (viewState.settlement.scoreChanges[myPlayer.playerId] ?? 0) >= 0)
+                          ? '/assets/ui/sy_shengli.png'
+                          : '/assets/ui/sy_shibai.png'
+                      }
+                      alt="胜负"
+                      className="h-11 w-auto object-contain drop-shadow-[0_4px_12px_rgba(0,0,0,0.65)]"
+                    />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="font-display text-xl font-extrabold text-amber-300">
+                          {viewState.settlement.isLandlordWin ? '地主获胜' : '农民合力获胜'}
+                        </h2>
+                        {(viewState.settlement.isSpring || viewState.settlement.isAntiSpring) && (
+                          <img
+                            src="/assets/ui/sy_chuntian.png"
+                            alt="春天"
+                            className="h-6 w-auto object-contain drop-shadow"
+                          />
+                        )}
+                        <span className="rounded-md border border-emerald-400/35 bg-emerald-900/70 px-2 py-0.5 text-[11px] font-bold text-emerald-200">
+                          {currentRoomTier.name}
                         </span>
-                      )}
+                        {viewState.settlement.isCapped && (
+                          <span className="rounded-md border border-amber-300/70 bg-amber-500/25 px-2 py-0.5 text-[11px] font-extrabold text-amber-200">
+                            已触发封顶 ×{viewState.settlement.maxMultiplier}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs text-emerald-200/80 tabular-nums">
+                        底分 {viewState.settlement.baseScore} · 抢地主 ×
+                        {viewState.settlement.grabMultiplier} · 加倍 ×
+                        {viewState.settlement.doubleMultiplier ?? 1} · 炸弹 ×
+                        {viewState.settlement.bombMultiplier}
+                        {(viewState.settlement.isSpring || viewState.settlement.isAntiSpring) &&
+                          ` · ${viewState.settlement.isSpring ? '春天' : '反春'} ×2`}{' '}
+                        · 原始 ×{viewState.settlement.totalMultiplier}
+                      </p>
                     </div>
-                    <p className="mt-1 text-xs text-emerald-200/80 tabular-nums">
-                      底分 {viewState.settlement.baseScore} · 抢地主 ×
-                      {viewState.settlement.grabMultiplier} · 加倍 ×
-                      {viewState.settlement.doubleMultiplier ?? 1} · 炸弹 ×
-                      {viewState.settlement.bombMultiplier}
-                      {(viewState.settlement.isSpring || viewState.settlement.isAntiSpring) &&
-                        ` · ${viewState.settlement.isSpring ? '春天' : '反春'} ×2`}{' '}
-                      · 原始 ×{viewState.settlement.totalMultiplier}
-                    </p>
                   </div>
                   <div className="text-right tabular-nums">
                     <span className="text-xs text-emerald-300">结算有效倍数</span>

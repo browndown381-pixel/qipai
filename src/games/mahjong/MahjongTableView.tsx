@@ -75,7 +75,13 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
   const [showLeaveConfirm, setShowLeaveConfirm] = useState<boolean>(false);
   const [showFullscreenGuide, setShowFullscreenGuide] = useState<boolean>(false);
   const [showDiceAnimation, setShowDiceAnimation] = useState<boolean>(false);
-  const [activeActionGlow, setActiveActionGlow] = useState<'peng' | 'gang' | 'hu' | 'zimo' | null>(null);
+  const [activeActionGlow, setActiveActionGlow] = useState<{
+    action: 'chi' | 'peng' | 'gang' | 'hu' | 'zimo';
+    relativeSeat?: number;
+    subType?: 'guafeng' | 'xiayu';
+    fanNames?: string[];
+  } | null>(null);
+  const [propTargetAbsSeat, setPropTargetAbsSeat] = useState<number | null>(null);
   const [floatingScores, setFloatingScores] = useState<Array<{ id: string; seatId: number; text: string; isWin: boolean }>>([]);
   const [sharePosterUrl, setSharePosterUrl] = useState<string | null>(null);
   const [isGeneratingPoster, setIsGeneratingPoster] = useState<boolean>(false);
@@ -227,16 +233,21 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
       }
     }
 
-    // 4. Meld Action Voice Callout (e.g. 碰)
+    // 4. Meld Action Voice Callout (e.g. 碰 / 吃)
     snapshot.players.forEach((p, sId) => {
       const meldsCount = p.melds?.length || 0;
       if (meldsCount > (prevMeldsCountsRef.current[sId] || 0)) {
         const latestMeld = p.melds[meldsCount - 1];
-        if (latestMeld && latestMeld.type === 'peng') {
+        const relSeat = (sId - mySeatId + 4) % 4;
+        if (latestMeld && (latestMeld.type === 'peng' || latestMeld.type === 'chi')) {
           const isFemale = p.avatarId === 'beier' || p.avatarId === 'heroine';
           const gender = isFemale ? 'female' : 'male';
+          const actType = latestMeld.type === 'chi' ? 'chi' : 'peng';
           soundEngine.playActionVoice('peng', gender);
-          setActiveActionGlow('peng');
+          setActiveActionGlow({
+            action: actType,
+            relativeSeat: relSeat,
+          });
           MahjongDebugLogger.logActionAndSettlement({
             action: 'peng',
             seat: sId,
@@ -259,16 +270,23 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
       const latestBill = newBills[newBills.length - 1];
 
       soundEngine.playMahjongBeanFly();
+      const winnerSeat = latestBill.winnerSeatId ?? 0;
+      const winnerRelSeat = (winnerSeat - mySeatId + 4) % 4;
       const winnerPlayer = latestBill.winnerSeatId !== undefined ? snapshot.players[latestBill.winnerSeatId] : undefined;
       const isFemale = winnerPlayer?.avatarId === 'beier' || winnerPlayer?.avatarId === 'heroine';
       const gender = isFemale ? 'female' : 'male';
+      const billFanNames = latestBill.fanName ? [latestBill.fanName] : undefined;
 
       if (latestBill.eventType === 'zimo') {
         soundEngine.playActionVoice('zimo', gender);
-        setActiveActionGlow('zimo');
+        setActiveActionGlow({
+          action: 'zimo',
+          relativeSeat: winnerRelSeat,
+          fanNames: billFanNames,
+        });
         MahjongDebugLogger.logActionAndSettlement({
           action: 'zimo',
-          seat: latestBill.winnerSeatId ?? 0,
+          seat: winnerSeat,
           playerName: winnerPlayer?.nickname || '玩家',
           gender,
           mode: snapshot.mode || 'puer',
@@ -279,10 +297,14 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
         });
       } else if (latestBill.eventType === 'dianpao' || latestBill.eventType === 'qianggang') {
         soundEngine.playActionVoice('hu', gender);
-        setActiveActionGlow('hu');
+        setActiveActionGlow({
+          action: 'hu',
+          relativeSeat: winnerRelSeat,
+          fanNames: billFanNames,
+        });
         MahjongDebugLogger.logActionAndSettlement({
           action: 'hu',
-          seat: latestBill.winnerSeatId ?? 0,
+          seat: winnerSeat,
           playerName: winnerPlayer?.nickname || '玩家',
           gender,
           mode: snapshot.mode || 'puer',
@@ -293,10 +315,14 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
         });
       } else if (latestBill.eventType === 'guafeng' || latestBill.eventType === 'xiayu') {
         soundEngine.playActionVoice('gang', gender);
-        setActiveActionGlow('gang');
+        setActiveActionGlow({
+          action: 'gang',
+          relativeSeat: winnerRelSeat,
+          subType: latestBill.eventType,
+        });
         MahjongDebugLogger.logActionAndSettlement({
           action: 'gang',
-          seat: latestBill.winnerSeatId ?? 0,
+          seat: winnerSeat,
           playerName: winnerPlayer?.nickname || '玩家',
           gender,
           mode: snapshot.mode || 'puer',
@@ -629,49 +655,151 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
 
               {/* SEAT 3: LEFT PLAYER - Upper-Left Rail */}
               {relativePlayers[3] && (
-                <div className="absolute top-[200px] left-5 z-20">
-                  <MahjongPlayerAvatar
-                    nickname={relativePlayers[3].nickname}
-                    avatarId={relativePlayers[3].avatarId}
-                    beans={relativePlayers[3].beans}
-                    isBanker={snapshot?.dealerSeatId === (mySeatId + 3) % 4}
-                    dingQueSuit={relativePlayers[3].dingQueSuit}
-                    huCount={relativePlayers[3].huCount}
-                    isCurrentTurn={relativeCurrentTurn === 3}
-                    showMelds={false}
-                  />
+                <div className="absolute top-[200px] left-5 z-20 flex flex-col items-start">
+                  <div
+                    onClick={() => {
+                      const absSeat = (mySeatId + 3) % 4;
+                      setPropTargetAbsSeat((prev) => (prev === absSeat ? null : absSeat));
+                    }}
+                    className="cursor-pointer transition-transform active:scale-95"
+                    title="点击向该牌友赠送互动礼仪"
+                  >
+                    <MahjongPlayerAvatar
+                      nickname={relativePlayers[3].nickname}
+                      avatarId={relativePlayers[3].avatarId}
+                      beans={relativePlayers[3].beans}
+                      isBanker={snapshot?.dealerSeatId === (mySeatId + 3) % 4}
+                      dingQueSuit={relativePlayers[3].dingQueSuit}
+                      huCount={relativePlayers[3].huCount}
+                      isCurrentTurn={relativeCurrentTurn === 3}
+                      showMelds={false}
+                    />
+                  </div>
+                  {propTargetAbsSeat === (mySeatId + 3) % 4 && (
+                    <div className="mt-1 flex items-center gap-1 rounded-xl border border-amber-300/60 bg-black/85 p-1 shadow-xl backdrop-blur-md">
+                      {[
+                        { type: 'flower', label: '鲜花' },
+                        { type: 'tea', label: '敬茶' },
+                        { type: 'like', label: '点赞' },
+                        { type: 'ingot', label: '元宝' },
+                      ].map((item) => (
+                        <button
+                          key={item.type}
+                          type="button"
+                          onClick={() => {
+                            socketClient.emit('c2s_throw_prop', {
+                              targetSeat: (mySeatId + 3) % 4,
+                              propType: item.type,
+                            });
+                            setPropTargetAbsSeat(null);
+                          }}
+                          className="rounded-lg px-2 py-1 text-[10px] font-bold text-amber-200 hover:bg-amber-500/25 active:scale-95 cursor-pointer"
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* SEAT 2: TOP PLAYER - Top Center-Right */}
               {relativePlayers[2] && (
-                <div className="absolute top-[50px] right-[260px] z-20">
-                  <MahjongPlayerAvatar
-                    nickname={relativePlayers[2].nickname}
-                    avatarId={relativePlayers[2].avatarId}
-                    beans={relativePlayers[2].beans}
-                    isBanker={snapshot?.dealerSeatId === (mySeatId + 2) % 4}
-                    dingQueSuit={relativePlayers[2].dingQueSuit}
-                    huCount={relativePlayers[2].huCount}
-                    isCurrentTurn={relativeCurrentTurn === 2}
-                    showMelds={false}
-                  />
+                <div className="absolute top-[50px] right-[260px] z-20 flex flex-col items-end">
+                  <div
+                    onClick={() => {
+                      const absSeat = (mySeatId + 2) % 4;
+                      setPropTargetAbsSeat((prev) => (prev === absSeat ? null : absSeat));
+                    }}
+                    className="cursor-pointer transition-transform active:scale-95"
+                    title="点击向该牌友赠送互动礼仪"
+                  >
+                    <MahjongPlayerAvatar
+                      nickname={relativePlayers[2].nickname}
+                      avatarId={relativePlayers[2].avatarId}
+                      beans={relativePlayers[2].beans}
+                      isBanker={snapshot?.dealerSeatId === (mySeatId + 2) % 4}
+                      dingQueSuit={relativePlayers[2].dingQueSuit}
+                      huCount={relativePlayers[2].huCount}
+                      isCurrentTurn={relativeCurrentTurn === 2}
+                      showMelds={false}
+                    />
+                  </div>
+                  {propTargetAbsSeat === (mySeatId + 2) % 4 && (
+                    <div className="mt-1 flex items-center gap-1 rounded-xl border border-amber-300/60 bg-black/85 p-1 shadow-xl backdrop-blur-md">
+                      {[
+                        { type: 'flower', label: '鲜花' },
+                        { type: 'tea', label: '敬茶' },
+                        { type: 'like', label: '点赞' },
+                        { type: 'ingot', label: '元宝' },
+                      ].map((item) => (
+                        <button
+                          key={item.type}
+                          type="button"
+                          onClick={() => {
+                            socketClient.emit('c2s_throw_prop', {
+                              targetSeat: (mySeatId + 2) % 4,
+                              propType: item.type,
+                            });
+                            setPropTargetAbsSeat(null);
+                          }}
+                          className="rounded-lg px-2 py-1 text-[10px] font-bold text-amber-200 hover:bg-amber-500/25 active:scale-95 cursor-pointer"
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* SEAT 1: RIGHT PLAYER - Upper-Right Rail */}
               {relativePlayers[1] && (
-                <div className="absolute top-[200px] right-5 z-20">
-                  <MahjongPlayerAvatar
-                    nickname={relativePlayers[1].nickname}
-                    avatarId={relativePlayers[1].avatarId}
-                    beans={relativePlayers[1].beans}
-                    isBanker={snapshot?.dealerSeatId === (mySeatId + 1) % 4}
-                    dingQueSuit={relativePlayers[1].dingQueSuit}
-                    huCount={relativePlayers[1].huCount}
-                    isCurrentTurn={relativeCurrentTurn === 1}
-                    showMelds={false}
-                  />
+                <div className="absolute top-[200px] right-5 z-20 flex flex-col items-end">
+                  <div
+                    onClick={() => {
+                      const absSeat = (mySeatId + 1) % 4;
+                      setPropTargetAbsSeat((prev) => (prev === absSeat ? null : absSeat));
+                    }}
+                    className="cursor-pointer transition-transform active:scale-95"
+                    title="点击向该牌友赠送互动礼仪"
+                  >
+                    <MahjongPlayerAvatar
+                      nickname={relativePlayers[1].nickname}
+                      avatarId={relativePlayers[1].avatarId}
+                      beans={relativePlayers[1].beans}
+                      isBanker={snapshot?.dealerSeatId === (mySeatId + 1) % 4}
+                      dingQueSuit={relativePlayers[1].dingQueSuit}
+                      huCount={relativePlayers[1].huCount}
+                      isCurrentTurn={relativeCurrentTurn === 1}
+                      showMelds={false}
+                    />
+                  </div>
+                  {propTargetAbsSeat === (mySeatId + 1) % 4 && (
+                    <div className="mt-1 flex items-center gap-1 rounded-xl border border-amber-300/60 bg-black/85 p-1 shadow-xl backdrop-blur-md">
+                      {[
+                        { type: 'flower', label: '鲜花' },
+                        { type: 'tea', label: '敬茶' },
+                        { type: 'like', label: '点赞' },
+                        { type: 'ingot', label: '元宝' },
+                      ].map((item) => (
+                        <button
+                          key={item.type}
+                          type="button"
+                          onClick={() => {
+                            socketClient.emit('c2s_throw_prop', {
+                              targetSeat: (mySeatId + 1) % 4,
+                              propType: item.type,
+                            });
+                            setPropTargetAbsSeat(null);
+                          }}
+                          className="rounded-lg px-2 py-1 text-[10px] font-bold text-amber-200 hover:bg-amber-500/25 active:scale-95 cursor-pointer"
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1122,7 +1250,10 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
 
             {activeActionGlow && (
               <ActionGlowEffect
-                action={activeActionGlow}
+                action={activeActionGlow.action}
+                relativeSeat={activeActionGlow.relativeSeat}
+                subType={activeActionGlow.subType}
+                fanNames={activeActionGlow.fanNames}
                 onComplete={() => setActiveActionGlow(null)}
               />
             )}

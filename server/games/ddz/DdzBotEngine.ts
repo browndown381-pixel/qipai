@@ -1041,6 +1041,56 @@ export class DdzBotEngine {
   }
 
   /**
+   * Two-Turn Checkmate Solver (二步必胜前瞻搜索):
+   * Checks if there is a playable move `m1` such that:
+   * 1) `m1` is an unstoppable control play (Rocket, Bomb, top-rank play, or multi-card combo when enemies cannot beat it), AND
+   * 2) The remaining cards `myCards - m1` form a single valid pattern `m2` (1-turn clear), OR
+   * 3) `m1` is any valid move and `myCards - m1` is a Rocket or Bomb (guaranteed regain control & instant win).
+   */
+  static solveTwoTurnCheckmate(
+    myCards: CardData[],
+    target: ClassifiedPattern | null,
+    moves: CardData[][],
+    enemyMaxCards: number,
+    wildRanks: Rank[] = []
+  ): CardData[] | null {
+    if (moves.length === 0 || myCards.length <= 1) return null;
+
+    for (const m1 of moves) {
+      if (m1.length >= myCards.length) continue;
+      const p1 = DdzRules.identifyPatternFor(m1, wildRanks, target);
+      if (!p1) continue;
+
+      const usedIds = new Set(m1.map((c) => c.id));
+      const remCards = myCards.filter((c) => !usedIds.has(c.id));
+      const p2 = DdzRules.identifyPattern(remCards, wildRanks);
+      if (!p2) continue;
+
+      // Case A: Remaining hand is a Rocket or Bomb -> playing m1 leaves an unstoppable bomb/rocket to finish!
+      if (p2.type === PatternType.ROCKET || p2.type === PatternType.BOMB) {
+        return m1;
+      }
+
+      // Case B: m1 itself is a Rocket, Bomb, or high commanding play that forces pass, and remCards is a single valid combo
+      const isCommandingMove =
+        p1.type === PatternType.ROCKET ||
+        p1.type === PatternType.BOMB ||
+        (p1.type === PatternType.SINGLE && p1.mainValue >= 16) ||
+        (p1.type === PatternType.PAIR && p1.mainValue >= 15) ||
+        (p1.type === PatternType.AIRPLANE ||
+          p1.type === PatternType.AIRPLANE_SINGLE_WINGS ||
+          p1.type === PatternType.AIRPLANE_PAIR_WINGS) ||
+        (p1.length > enemyMaxCards && enemyMaxCards <= 4);
+
+      if (isCommandingMove) {
+        return m1;
+      }
+    }
+
+    return null;
+  }
+
+  /**
    * Tactical AI Decision Engine for playing cards or passing.
    */
   static chooseBestMove(ctx: BotContext): CardData[] {
@@ -1052,11 +1102,29 @@ export class DdzBotEngine {
     const moves = this.findAllPlayableMoves(myCards, targetPattern, wildRanks);
     if (moves.length === 0) return [];
 
-    // 1. Instant Win Check
+    // 1. Instant 1-Turn Win Check
     for (const m of moves) {
       if (m.length === myCards.length) {
         return m;
       }
+    }
+
+    const enemySeats = isMeLandlord
+      ? [0, 1, 2].filter((s) => s !== landlordSeat)
+      : [landlordSeat];
+    const enemyMinCards = Math.min(...enemySeats.map((s) => seatCardCounts[s] ?? 17));
+    const enemyMaxCards = Math.max(...enemySeats.map((s) => seatCardCounts[s] ?? 17));
+
+    // 1.5 Two-Turn Checkmate Lookahead (二步必胜终局求解)
+    const checkmateMove = this.solveTwoTurnCheckmate(
+      myCards,
+      targetPattern,
+      moves,
+      enemyMaxCards,
+      wildRanks
+    );
+    if (checkmateMove) {
+      return checkmateMove;
     }
 
     const part = this.partitionHand(myCards, wildRanks);
@@ -1066,6 +1134,7 @@ export class DdzBotEngine {
       if (!isMeLandlord) {
         const teammateSeat = [0, 1, 2].find((s) => s !== mySeat && s !== landlordSeat)!;
         const teammateCount = seatCardCounts[teammateSeat] ?? 17;
+        // Feeder cooperation: feed lowest single/pair when teammate is down to 1 or 2 cards
         if (teammateCount === 1 && part.singles.length > 0) {
           return part.singles[0];
         }
@@ -1074,14 +1143,21 @@ export class DdzBotEngine {
         }
       }
 
-      const enemySeats = isMeLandlord
-        ? [0, 1, 2].filter((s) => s !== landlordSeat)
-        : [landlordSeat];
-      const enemyHasOneCard = enemySeats.some((s) => (seatCardCounts[s] ?? 17) === 1);
-      if (enemyHasOneCard) {
+      // Enemy 1-card alert: avoid leading small singles; prefer multi-card combos or highest single
+      if (enemyMinCards === 1) {
         const nonSingleMove = moves.find((m) => m.length > 1);
         if (nonSingleMove) return nonSingleMove;
+        const singleMoves = moves.filter((m) => m.length === 1);
+        if (singleMoves.length > 0) {
+          return singleMoves.reduce((best, m) => (m[0].value > best[0].value ? m : best));
+        }
         return moves[moves.length - 1];
+      }
+
+      // Enemy 2-card alert: avoid leading small pairs if multi-card sequences or singles exist
+      if (enemyMinCards === 2) {
+        const nonPairMove = moves.find((m) => m.length !== 2);
+        if (nonPairMove) return nonPairMove;
       }
 
       return moves[0];
@@ -1093,11 +1169,16 @@ export class DdzBotEngine {
     const lastPlayerCardsLeft = seatCardCounts[lastSeat] ?? 17;
 
     if (isTeammatePlay) {
-      if (lastPlayerCardsLeft <= 4) return [];
-      if (targetPattern.length >= 2 || targetPattern.mainValue >= 12) return [];
+      // Never suppress a teammate who is about to win or played a multi-card / high-value control pattern
+      if (lastPlayerCardsLeft <= 5) return [];
+      if (targetPattern.length >= 2 || targetPattern.mainValue >= 11) return [];
 
+      // Gatekeeper (守门员, next seat is Landlord): if teammate played a tiny single (< J) and we hold an isolated mid-high single (J..A), step up to block Landlord's cheap pass
+      const nextSeat = (mySeat + 1) % 3;
+      const isGatekeeper = nextSeat === landlordSeat;
+      const maxFollowVal = isGatekeeper ? 14 : 13;
       const cleanSingleFollow = part.singles.find(
-        (s) => s[0].value > targetPattern.mainValue && s[0].value <= 14
+        (s) => s[0].value > targetPattern.mainValue && s[0].value <= maxFollowVal
       );
       return cleanSingleFollow ?? [];
     }
@@ -1107,8 +1188,30 @@ export class DdzBotEngine {
     const firstPattern = DdzRules.identifyPatternFor(firstMove, wildRanks, targetPattern);
     if (!firstPattern) return [];
 
+    // Enemy 1-card alert on Single: block with our highest available single or non-bomb control
+    if (enemyMinCards === 1 && targetPattern.type === PatternType.SINGLE) {
+      const nonBombSingles = moves.filter((m) => {
+        const p = DdzRules.identifyPatternFor(m, wildRanks, targetPattern);
+        return p && p.type === PatternType.SINGLE;
+      });
+      if (nonBombSingles.length > 0) {
+        return nonBombSingles.reduce((best, m) => (m[0].value > best[0].value ? m : best));
+      }
+    }
+
+    // Enemy 2-card alert on Pair: block with a strong pair or bomb if enemy is about to run out
+    if (enemyMinCards <= 2 && targetPattern.type === PatternType.PAIR) {
+      const nonBombPairs = moves.filter((m) => {
+        const p = DdzRules.identifyPatternFor(m, wildRanks, targetPattern);
+        return p && p.type === PatternType.PAIR;
+      });
+      if (nonBombPairs.length > 0 && lastPlayerCardsLeft <= 2) {
+        return nonBombPairs[nonBombPairs.length - 1];
+      }
+    }
+
     if (firstPattern.type === PatternType.BOMB || firstPattern.type === PatternType.ROCKET) {
-      if (lastPlayerCardsLeft <= 5 || part.netTurns <= 2) {
+      if (lastPlayerCardsLeft <= 5 || enemyMinCards <= 3 || part.netTurns <= 2) {
         return firstMove;
       }
       return [];
@@ -1117,15 +1220,8 @@ export class DdzBotEngine {
     const usedIds = new Set(firstMove.map((c) => c.id));
     const remCards = myCards.filter((c) => !usedIds.has(c.id));
     const remPart = this.partitionHand(remCards, wildRanks);
-    if (remPart.netTurns > part.netTurns + 1 && lastPlayerCardsLeft > 6) {
+    if (remPart.netTurns > part.netTurns + 1 && lastPlayerCardsLeft > 6 && enemyMinCards > 3) {
       return [];
-    }
-
-    if (lastPlayerCardsLeft === 1 && targetPattern.type === PatternType.SINGLE) {
-      const singles = moves.filter((m) => m.length === 1);
-      if (singles.length > 0) {
-        return singles.reduce((best, m) => (m[0].value > best[0].value ? m : best));
-      }
     }
 
     return firstMove;

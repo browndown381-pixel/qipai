@@ -95,12 +95,42 @@ export interface HallViewProps {
     baseScore: number,
     isPrivate: boolean,
     autoFillBots: boolean,
-    mode?: DealMode
+    mode?: string,
+    gameType?: string
   ) => void;
   onJoinRoom: (roomId: string) => void;
   onRefreshLobby: () => void;
   onClaimSupply: () => void;
   onUpdateProfile: (nickname: string, avatarId: string) => void;
+}
+
+export type PortalStageType =
+  | 'main_portal'
+  | 'ddz_subhall'
+  | 'mahjong_subhall'
+  | 'niuniu_subhall'
+  | 'zhajinhua_subhall'
+  | 'laoyancai_subhall';
+
+const PORTAL_STAGE_STORAGE_KEY = 'h5_game_portal_stage';
+
+function loadPersistedPortalStage(): PortalStageType {
+  if (typeof window === 'undefined') return 'main_portal';
+  try {
+    const raw = localStorage.getItem(PORTAL_STAGE_STORAGE_KEY) as PortalStageType | null;
+    if (
+      raw === 'ddz_subhall' ||
+      raw === 'mahjong_subhall' ||
+      raw === 'niuniu_subhall' ||
+      raw === 'zhajinhua_subhall' ||
+      raw === 'laoyancai_subhall'
+    ) {
+      return raw;
+    }
+  } catch {
+    // Ignore storage error
+  }
+  return 'main_portal';
 }
 
 export type DdzArenaMode = 'classic' | 'tiandi_laizi' | 'no_shuffle' | 'puzzle';
@@ -135,17 +165,20 @@ export const HallView: React.FC<HallViewProps> = ({
     }
     return false;
   }, [viewport]);
-  const [portalStage, setPortalStage] = useState<
-    | 'main_portal'
-    | 'ddz_subhall'
-    | 'mahjong_subhall'
-    | 'niuniu_subhall'
-    | 'zhajinhua_subhall'
-    | 'laoyancai_subhall'
-  >('main_portal');
+  const [portalStage, setPortalStage] = useState<PortalStageType>(() =>
+    loadPersistedPortalStage()
+  );
   const [ddzArenaMode, setDdzArenaMode] = useState<DdzArenaMode>('classic');
   const [selectedBaseScore, setSelectedBaseScore] = useState<number>(100);
   const [selectedDealMode, setSelectedDealMode] = useState<DealMode>('classic');
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PORTAL_STAGE_STORAGE_KEY, portalStage);
+    } catch {
+      // Ignore storage error
+    }
+  }, [portalStage]);
 
   // Modals state
   const [insufficientTier, setInsufficientTier] = useState<RoomTierConfig | null>(null);
@@ -293,6 +326,7 @@ export const HallView: React.FC<HallViewProps> = ({
         profile={profile}
         displayNumericId={displayNumericId}
         isMainPortal={isMainPortal}
+        portalStage={portalStage}
         myBeans={myBeans}
         myRoomCards={myRoomCards}
         isBankruptAlert={isBankruptAlert}
@@ -304,6 +338,7 @@ export const HallView: React.FC<HallViewProps> = ({
         onClaimRoomCards={handleClaimRoomCards}
         onClaimSupply={onClaimSupply}
         onOpenSettings={() => setShowSettingsModal(true)}
+        onOpenFriendRoom={() => setShowFriendRoomModal(true)}
         onCopyIdSuccess={(copiedId) => showToastMessage(`已复制玩家 ID: ${copiedId}`)}
       />
 
@@ -562,6 +597,17 @@ export const HallView: React.FC<HallViewProps> = ({
           onClose={() => setShowFriendRoomModal(false)}
           onJoinRoom={onJoinRoom}
           onCreateRoom={onCreateRoom}
+          initialGameType={
+            portalStage === 'mahjong_subhall'
+              ? 'mahjong'
+              : portalStage === 'niuniu_subhall'
+              ? 'niuniu'
+              : portalStage === 'zhajinhua_subhall'
+              ? 'zhajinhua'
+              : portalStage === 'laoyancai_subhall'
+              ? 'laoyancai'
+              : 'ddz'
+          }
           initialMode={selectedDealMode}
           initialBaseScore={selectedBaseScore}
         />

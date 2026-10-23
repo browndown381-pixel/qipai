@@ -418,7 +418,12 @@ export class MahjongRoom implements IGameRoom {
     this.botTimer = setTimeout(() => {
       const pending = this.pendingActions.get(seatId);
       if (pending && pending.length > 0) {
-        const choice = MahjongBotEngine.decideAction(pending);
+        const choice = MahjongBotEngine.decideAction(
+          pending,
+          this.hands[seatId],
+          this.melds[seatId]?.length || 0,
+          this.playMode
+        );
         if (choice) {
           this.executeAction(seatId, choice);
           return;
@@ -572,7 +577,12 @@ export class MahjongRoom implements IGameRoom {
         const acts = this.pendingActions.get(s) || [];
         setTimeout(() => {
           if (!this.pendingResponders.has(s)) return;
-          const act = MahjongBotEngine.decideAction(acts);
+          const act = MahjongBotEngine.decideAction(
+            acts,
+            this.hands[s],
+            this.melds[s]?.length || 0,
+            this.playMode
+          );
           this.submitPlayerResponse(s, act || { actionType: 'pass', targetTile: tileId });
         }, 950 + Math.floor(Math.random() * 150));
       }
@@ -1278,7 +1288,12 @@ export class MahjongRoom implements IGameRoom {
         const targetTile = this.latestDiscard?.tileId ?? 0;
         setTimeout(() => {
           if (!this.pendingResponders.has(seatId)) return;
-          const act = MahjongBotEngine.decideAction(acts);
+          const act = MahjongBotEngine.decideAction(
+            acts,
+            this.hands[seatId],
+            this.melds[seatId]?.length || 0,
+            this.playMode
+          );
           this.submitPlayerResponse(seatId, act || { actionType: 'pass', targetTile });
         }, 850);
       } else if (this.currentTurnSeatId === seatId) {
@@ -1308,18 +1323,83 @@ export class MahjongRoom implements IGameRoom {
 
   handleClientEvent(playerId: string, event: string, payload: unknown): void {
     const seatId = this.seats.findIndex((s) => s?.playerId === playerId);
-    if (seatId !== -1 && this.seats[seatId] && event !== 'c2s_toggle_trusteeship') {
+    if (
+      seatId !== -1 &&
+      this.seats[seatId] &&
+      event !== 'c2s_toggle_trusteeship' &&
+      event !== 'c2s_send_chat' &&
+      event !== 'c2s_throw_prop'
+    ) {
       this.seats[seatId]!.disconnected = false;
-      this.seats[seatId]!.trusteeship = false;
+      if (this.seats[seatId]!.trusteeship) {
+        this.seats[seatId]!.trusteeship = false;
+        this.connectionManager.emitToPlayer(playerId, 's2c_trusteeship_changed', {
+          playerId,
+          seatIndex: seatId,
+          trusteeship: false,
+        });
+      }
+    }
+
+    if (event === 'c2s_throw_prop') {
+      if (seatId !== -1 && this.seats[seatId]) {
+        const data = (payload || {}) as { targetSeat?: number; propType?: string };
+        const targetSeat = Number(data.targetSeat);
+        const allowedProps = ['flower', 'tea', 'like', 'ingot', 'bomb_cup'];
+        const rawProp = String(data.propType ?? 'flower');
+        const propType = allowedProps.includes(rawProp) ? rawProp : 'flower';
+        if ([0, 1, 2, 3].includes(targetSeat) && targetSeat !== seatId && this.seats[targetSeat]) {
+          for (const s of this.seats) {
+            if (s && !s.isBot) {
+              this.connectionManager.emitToPlayer(s.playerId, 's2c_prop_thrown', {
+                fromSeat: seatId,
+                toSeat: targetSeat,
+                propType,
+                fromNickname: this.seats[seatId]!.nickname,
+                toNickname: this.seats[targetSeat]!.nickname,
+              });
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    if (event === 'c2s_send_chat') {
+      if (seatId !== -1 && this.seats[seatId]) {
+        const data = (payload || {}) as { text?: string; emoji?: string };
+        const text = typeof data.text === 'string' ? data.text.slice(0, 40) : '';
+        const emoji = typeof data.emoji === 'string' ? data.emoji.slice(0, 12) : undefined;
+        if (text || emoji) {
+          for (const s of this.seats) {
+            if (s && !s.isBot) {
+              this.connectionManager.emitToPlayer(s.playerId, 's2c_chat_message', {
+                playerId,
+                seatIndex: seatId,
+                nickname: this.seats[seatId]!.nickname,
+                text,
+                emoji,
+              });
+            }
+          }
+        }
+      }
+      return;
     }
 
     if (event === 'c2s_toggle_trusteeship') {
       if (seatId !== -1 && this.seats[seatId]) {
         const data = (payload || {}) as { trusteeship?: boolean };
-        this.seats[seatId]!.trusteeship =
+        const nextTrust =
           data.trusteeship !== undefined ? Boolean(data.trusteeship) : !this.seats[seatId]!.trusteeship;
+        this.seats[seatId]!.trusteeship = nextTrust;
+        this.connectionManager.emitToPlayer(playerId, 's2c_trusteeship_changed', {
+          playerId,
+          seatIndex: seatId,
+          trusteeship: nextTrust,
+        });
         this.broadcastSnapshot();
-        if (this.seats[seatId]!.trusteeship) {
+        if (nextTrust) {
           this.triggerAutoTakeoverIfNeeded(seatId);
         }
       }

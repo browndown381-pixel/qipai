@@ -139,10 +139,14 @@ export const MahjongArenaGrid: React.FC<MahjongArenaGridProps> = ({
     onSelectTier(tier.baseScore, activeMode);
   };
 
+  const recommendedTierId =
+    ([...MAHJONG_TIER_CONFIGS].reverse().find((t) => myBeans >= t.minBeans) ??
+      MAHJONG_TIER_CONFIGS[0]).id;
+
   return (
     <div className="relative flex h-full min-h-0 w-full flex-1 flex-col items-center justify-between overflow-hidden select-none px-1 py-1 sm:py-2">
       {/* 1. CLEAN COMMERCIAL 4-MODE SWITCHER BAR */}
-      <div className="mx-auto grid w-full max-w-[min(480px,calc((100dvh-130px)*0.82))] sm:max-w-[540px] shrink-0 grid-cols-4 gap-1.5 rounded-2xl border border-amber-200/25 bg-[#1e120a]/80 p-1 shadow-[inset_0_2px_4px_rgba(0,0,0,0.45),0_4px_12px_rgba(0,0,0,0.25)] backdrop-blur-md sm:gap-2 sm:p-1.5 landscape:max-w-4xl">
+      <div className="mx-auto grid w-full max-w-[min(430px,calc((100dvh-132px)*0.8))] sm:max-w-[460px] shrink-0 grid-cols-4 gap-1.5 rounded-2xl border border-amber-200/25 bg-[#1e120a]/80 p-1 shadow-[inset_0_2px_4px_rgba(0,0,0,0.45),0_4px_12px_rgba(0,0,0,0.25)] backdrop-blur-md sm:gap-2 sm:p-1.5 landscape:max-w-[660px]">
         {MAHJONG_PLAY_MODES.map((m) => {
           const active = activeMode === m.id;
           return (
@@ -154,7 +158,7 @@ export const MahjongArenaGrid: React.FC<MahjongArenaGridProps> = ({
                 hapticEngine.tap();
                 setActiveMode(m.id);
               }}
-              className={`relative flex h-8.5 items-center justify-center rounded-xl px-2 transition-all duration-150 active:scale-[0.98] sm:h-10 cursor-pointer ${
+              className={`relative flex h-8.5 items-center justify-center rounded-xl px-2 transition-all duration-150 active:scale-[0.98] sm:h-9.5 cursor-pointer ${
                 active
                   ? 'border border-amber-200 bg-gradient-to-b from-[#ffe48a] via-[#f59e0b] to-[#d97706] text-[#1f0c04] shadow-[0_2px_10px_rgba(245,158,11,0.4)]'
                   : 'border border-transparent bg-white/[0.06] text-amber-100/85 hover:bg-white/[0.12] hover:text-white'
@@ -171,16 +175,17 @@ export const MahjongArenaGrid: React.FC<MahjongArenaGridProps> = ({
       {/* 2. 4 CLEAN COMMERCIAL ARENA CARDS */}
       <div
         className="
-          mx-auto my-auto grid min-h-0 w-full
-          max-w-[min(480px,calc((100dvh-130px)*0.82))] sm:max-w-[540px]
-          max-h-[min(100%,640px)] aspect-[3/3.75]
+          mx-auto my-auto grid min-h-0 w-full place-items-center
+          max-w-[min(430px,calc((100dvh-132px)*0.8))] sm:max-w-[460px]
+          max-h-[min(100%,540px)]
           grid-cols-2 grid-rows-2
           gap-2.5 sm:gap-3.5
-          landscape:max-w-4xl landscape:max-h-[350px] landscape:aspect-[16/7.0] landscape:grid-cols-4 landscape:grid-rows-1
+          landscape:max-w-[min(700px,calc((100dvh-116px)*2.85))] landscape:max-h-[240px] landscape:grid-cols-4 landscape:grid-rows-1 landscape:gap-3
         "
       >
         {MAHJONG_TIER_CONFIGS.map((tier) => {
           const canAfford = myBeans >= tier.minBeans;
+          const isRecommended = tier.id === recommendedTierId;
           const dynamicOnline = Math.round(
             tier.onlineBase * activeModeMeta.onlineFactor
           );
@@ -191,21 +196,31 @@ export const MahjongArenaGrid: React.FC<MahjongArenaGridProps> = ({
               type="button"
               onClick={() => handleCardClick(tier)}
               className={`
-                group relative flex h-full min-h-0 w-full cursor-pointer flex-col items-center justify-between
-                overflow-hidden rounded-[22px] sm:rounded-[26px] border-2 ${tier.theme.borderColor}
+                group relative mx-auto flex h-full max-h-[250px] min-h-0 w-full max-w-[205px] aspect-[3/3.85]
+                landscape:max-h-[225px] landscape:max-w-[166px] landscape:aspect-[3/3.8]
+                cursor-pointer flex-col items-center justify-between
+                overflow-hidden rounded-[20px] sm:rounded-[24px] border-2 ${tier.theme.borderColor}
                 bg-gradient-to-b ${tier.theme.cardGradient}
-                px-3 pt-2.5 pb-3 text-center
+                px-3 pt-2.5 pb-2.5 text-center
                 shadow-[0_10px_22px_rgba(25,12,4,0.32),inset_0_1.5px_1px_rgba(255,255,255,0.45)]
                 transition-all duration-150 active:scale-[0.98] [@media(hover:hover)]:hover:brightness-105
+                ${isRecommended ? 'ring-2 ring-amber-300/90' : ''}
                 ${canAfford ? '' : 'opacity-85'}
               `}
             >
               {/* Soft Top Specular Highlight */}
               <div className="pointer-events-none absolute inset-x-0 top-0 h-2/3 bg-[radial-gradient(circle_at_50%_20%,rgba(255,255,255,0.22),transparent_70%)]" />
 
-              {/* Top-Right Compact Online Counter */}
-              <div className="relative z-20 flex w-full shrink-0 items-center justify-end">
-                <div className="flex items-center gap-1 rounded-full bg-black/22 px-2.5 py-0.5 text-[10px] sm:text-xs font-bold text-white/95 backdrop-blur-xs">
+              {/* Top Row: Recommended Tag + Compact Online Counter */}
+              <div className="relative z-20 flex w-full shrink-0 items-center justify-between">
+                {isRecommended ? (
+                  <span className="rounded-md bg-amber-300/95 px-1.5 py-0.5 text-[9px] font-black tracking-wider text-[#2b1405] shadow-xs">
+                    推荐
+                  </span>
+                ) : (
+                  <span />
+                )}
+                <div className="flex items-center gap-1 rounded-full bg-black/22 px-2 py-0.5 text-[10px] sm:text-xs font-bold text-white/95 backdrop-blur-xs">
                   <img
                     src="/assets/ui/icon_online.png"
                     alt="在线"

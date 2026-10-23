@@ -10,6 +10,8 @@ import {
 } from './hall/HallView';
 import { soundEngine } from './shared/audio/SoundEngine';
 import { socketClient } from './shared/network/SocketClient';
+import { GameErrorBoundary } from './shared/ui/GameErrorBoundary';
+import { SharedTableHudOverlay } from './shared/ui/SharedTableHudOverlay';
 import {
   requestUniversalFullscreen,
   exitUniversalFullscreen,
@@ -83,6 +85,26 @@ function loadPersistedRoomState(): { roomId: string | null; gameType: string | n
   return { roomId: null, gameType: null };
 }
 
+const STORAGE_KEY_PORTAL_STAGE = 'h5_game_portal_stage';
+
+function syncSubHallStageForGame(gameType: string | null): void {
+  if (typeof window === 'undefined' || !gameType) return;
+  try {
+    const map: Record<string, string> = {
+      ddz: 'ddz_subhall',
+      mahjong: 'mahjong_subhall',
+      niuniu: 'niuniu_subhall',
+      zhajinhua: 'zhajinhua_subhall',
+      laoyancai: 'laoyancai_subhall',
+    };
+    if (map[gameType]) {
+      localStorage.setItem(STORAGE_KEY_PORTAL_STAGE, map[gameType]);
+    }
+  } catch {
+    // Ignore storage error
+  }
+}
+
 function savePersistedRoomState(roomId: string | null, gameType: string | null): void {
   if (typeof window === 'undefined') return;
   try {
@@ -90,6 +112,7 @@ function savePersistedRoomState(roomId: string | null, gameType: string | null):
       localStorage.setItem(STORAGE_KEY_ACTIVE_ROOM_ID, roomId);
       if (gameType) {
         localStorage.setItem(STORAGE_KEY_ACTIVE_GAME_TYPE, gameType);
+        syncSubHallStageForGame(gameType);
       }
     } else {
       localStorage.removeItem(STORAGE_KEY_ACTIVE_ROOM_ID);
@@ -741,9 +764,43 @@ export default function App() {
   }, [activeRoomId, activeRoomGameType]);
 
   const leaveCurrentRoom = useCallback(() => {
-    setActiveRoomId(null);
-    setActiveRoomGameType(null);
+    setActiveRoomId((prevRoom) => {
+      if (prevRoom) {
+        socketClient.emit('c2s_leave_room');
+      }
+      return null;
+    });
+    setActiveRoomGameType((prevGame) => {
+      if (prevGame) {
+        syncSubHallStageForGame(prevGame);
+      }
+      return null;
+    });
     savePersistedRoomState(null, null);
+  }, []);
+
+  // Progressive idle prefetching of all 5 game table chunks & card textures
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const scheduleIdle =
+      (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number })
+        .requestIdleCallback || ((cb: () => void) => window.setTimeout(cb, 1500));
+
+    const timer = window.setTimeout(() => {
+      scheduleIdle(
+        () => {
+          preloadAllCardTextures().catch(() => {});
+          void import('./games/ddz/DdzTableView');
+          void import('./games/mahjong/MahjongTableView');
+          void import('./games/niuniu/NiuniuTableView');
+          void import('./games/zhajinhua/ZhajinhuaTableView');
+          void import('./games/laoyancai/LaoYanCaiTableView');
+        },
+        { timeout: 3000 }
+      );
+    }, 1200);
+
+    return () => window.clearTimeout(timer);
   }, []);
 
   const showNotice = useCallback((msg: string) => {
@@ -975,12 +1032,14 @@ export default function App() {
     baseScore: number,
     isPrivate: boolean,
     autoFillBots: boolean,
-    mode: DealMode = 'classic'
+    mode = 'classic',
+    gameType = 'ddz'
   ) => {
     soundEngine.playTap(720);
-    setActiveRoomGameType('ddz');
+    setActiveRoomGameType(gameType);
+    syncSubHallStageForGame(gameType);
     socketClient.emit('c2s_create_room', {
-      gameType: 'ddz',
+      gameType,
       baseScore,
       isPrivate,
       autoFillBots,
@@ -1012,96 +1071,102 @@ export default function App() {
   };
 
   return (
-    <ResponsiveLayoutContainer
-      viewport={viewport}
-      onContainerResize={handleContainerResize}
-    >
-      {activeRoomId ? (
-        <Suspense fallback={<GameLoadingFallback gameType={activeRoomGameType} />}>
-          {activeRoomGameType === 'mahjong' ? (
-            <MahjongTableView
-              viewport={viewport}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={handleToggleFullscreen}
-              onLeaveRoom={() => {
-                leaveCurrentRoom();
-                exitUniversalFullscreen().catch(() => {});
-                soundEngine.startBgm('lobby');
-                socketClient.emit('c2s_get_lobby_data');
-              }}
+    <GameErrorBoundary onResetToHall={leaveCurrentRoom}>
+      <ResponsiveLayoutContainer
+        viewport={viewport}
+        onContainerResize={handleContainerResize}
+      >
+        {activeRoomId ? (
+          <Suspense fallback={<GameLoadingFallback gameType={activeRoomGameType} />}>
+            <SharedTableHudOverlay
+              activeRoomId={activeRoomId}
+              gameType={activeRoomGameType}
             />
-          ) : activeRoomGameType === 'zhajinhua' ? (
-            <ZhajinhuaTableView
-              viewport={viewport}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={handleToggleFullscreen}
-              onLeaveRoom={() => {
-                leaveCurrentRoom();
-                exitUniversalFullscreen().catch(() => {});
-                soundEngine.startBgm('lobby');
-                socketClient.emit('c2s_get_lobby_data');
-              }}
-            />
-          ) : activeRoomGameType === 'niuniu' ? (
-            <NiuniuTableView
-              viewport={viewport}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={handleToggleFullscreen}
-              onLeaveRoom={() => {
-                leaveCurrentRoom();
-                exitUniversalFullscreen().catch(() => {});
-                soundEngine.startBgm('lobby');
-                socketClient.emit('c2s_get_lobby_data');
-              }}
-            />
-          ) : activeRoomGameType === 'laoyancai' ? (
-            <LaoYanCaiTableView
-              viewport={viewport}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={handleToggleFullscreen}
-              onLeaveRoom={() => {
-                leaveCurrentRoom();
-                exitUniversalFullscreen().catch(() => {});
-                soundEngine.startBgm('lobby');
-                socketClient.emit('c2s_get_lobby_data');
-              }}
-            />
-          ) : (
-            <DdzTableView
-              viewport={viewport}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={handleToggleFullscreen}
-              onLeaveRoom={() => {
-                leaveCurrentRoom();
-                exitUniversalFullscreen().catch(() => {});
-                soundEngine.startBgm('lobby');
-                socketClient.emit('c2s_get_lobby_data');
-              }}
-            />
-          )}
-        </Suspense>
-      ) : (
-        <HallView
-          profile={profile}
-          rooms={rooms}
-          leaderboard={leaderboard}
-          matches={matches}
-          notice={notice}
-          viewport={viewport}
-          isFullscreen={isFullscreen}
-          onToggleFullscreen={handleToggleFullscreen}
-          onQuickMatch={handleQuickMatch}
-          onQuickMatchMahjong={handleQuickMatchMahjong}
-          onQuickMatchNiuniu={handleQuickMatchNiuniu}
-          onQuickMatchZhajinhua={handleQuickMatchZhajinhua}
-          onQuickMatchLaoYanCai={handleQuickMatchLaoYanCai}
-          onCreateRoom={handleCreateRoom}
-          onJoinRoom={handleJoinRoom}
-          onRefreshLobby={handleRefreshLobby}
-          onClaimSupply={handleClaimSupply}
-          onUpdateProfile={handleUpdateProfile}
-        />
-      )}
-    </ResponsiveLayoutContainer>
+            {activeRoomGameType === 'mahjong' ? (
+              <MahjongTableView
+                viewport={viewport}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={handleToggleFullscreen}
+                onLeaveRoom={() => {
+                  leaveCurrentRoom();
+                  exitUniversalFullscreen().catch(() => {});
+                  soundEngine.startBgm('lobby');
+                  socketClient.emit('c2s_get_lobby_data');
+                }}
+              />
+            ) : activeRoomGameType === 'zhajinhua' ? (
+              <ZhajinhuaTableView
+                viewport={viewport}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={handleToggleFullscreen}
+                onLeaveRoom={() => {
+                  leaveCurrentRoom();
+                  exitUniversalFullscreen().catch(() => {});
+                  soundEngine.startBgm('lobby');
+                  socketClient.emit('c2s_get_lobby_data');
+                }}
+              />
+            ) : activeRoomGameType === 'niuniu' ? (
+              <NiuniuTableView
+                viewport={viewport}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={handleToggleFullscreen}
+                onLeaveRoom={() => {
+                  leaveCurrentRoom();
+                  exitUniversalFullscreen().catch(() => {});
+                  soundEngine.startBgm('lobby');
+                  socketClient.emit('c2s_get_lobby_data');
+                }}
+              />
+            ) : activeRoomGameType === 'laoyancai' ? (
+              <LaoYanCaiTableView
+                viewport={viewport}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={handleToggleFullscreen}
+                onLeaveRoom={() => {
+                  leaveCurrentRoom();
+                  exitUniversalFullscreen().catch(() => {});
+                  soundEngine.startBgm('lobby');
+                  socketClient.emit('c2s_get_lobby_data');
+                }}
+              />
+            ) : (
+              <DdzTableView
+                viewport={viewport}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={handleToggleFullscreen}
+                onLeaveRoom={() => {
+                  leaveCurrentRoom();
+                  exitUniversalFullscreen().catch(() => {});
+                  soundEngine.startBgm('lobby');
+                  socketClient.emit('c2s_get_lobby_data');
+                }}
+              />
+            )}
+          </Suspense>
+        ) : (
+          <HallView
+            profile={profile}
+            rooms={rooms}
+            leaderboard={leaderboard}
+            matches={matches}
+            notice={notice}
+            viewport={viewport}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={handleToggleFullscreen}
+            onQuickMatch={handleQuickMatch}
+            onQuickMatchMahjong={handleQuickMatchMahjong}
+            onQuickMatchNiuniu={handleQuickMatchNiuniu}
+            onQuickMatchZhajinhua={handleQuickMatchZhajinhua}
+            onQuickMatchLaoYanCai={handleQuickMatchLaoYanCai}
+            onCreateRoom={handleCreateRoom}
+            onJoinRoom={handleJoinRoom}
+            onRefreshLobby={handleRefreshLobby}
+            onClaimSupply={handleClaimSupply}
+            onUpdateProfile={handleUpdateProfile}
+          />
+        )}
+      </ResponsiveLayoutContainer>
+    </GameErrorBoundary>
   );
 }

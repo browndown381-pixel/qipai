@@ -20,6 +20,14 @@ export function getAllCardTexturePaths(): string[] {
   }
   paths.push('/assets/ddz/cards/Card_Joker_Black_SmallKing.png');
   paths.push('/assets/ddz/cards/Card_Joker_Red_BigKing.png');
+  paths.push('/assets/ui/fx_light_burst.png');
+  paths.push('/assets/ui/csr_zha.png');
+  paths.push('/assets/ui/csr_huo.png');
+  paths.push('/assets/ui/csr_huoxing.png');
+  paths.push('/assets/ui/sy_chuntian.png');
+  paths.push('/assets/ui/sy_shengli.png');
+  paths.push('/assets/ui/sy_shibai.png');
+  paths.push('/assets/ui/csr_yuanbao_xiao.png');
   return paths;
 }
 

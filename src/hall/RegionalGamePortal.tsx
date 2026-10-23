@@ -206,12 +206,12 @@ export const RegionalGamePortal: React.FC<RegionalGamePortalProps> = ({
          ===================================================================== */}
       <div
         className="
-          mx-auto my-auto grid min-h-0 w-full
-          max-w-[min(470px,calc((100dvh-146px)*0.85))] sm:max-w-[540px] md:max-w-[620px]
-          max-h-[min(100%,650px)] aspect-[3/3.62]
-          grid-cols-2 grid-rows-[1fr_1fr_1fr]
+          mx-auto my-auto grid min-h-0 w-full place-items-center
+          max-w-[min(440px,calc((100dvh-148px)*0.82))] sm:max-w-[500px]
+          max-h-[min(100%,620px)]
+          grid-cols-2 grid-rows-3
           gap-2.5 sm:gap-3.5
-          landscape:max-w-4xl landscape:max-h-[min(100%,380px)] landscape:aspect-[16/7.4] landscape:grid-cols-3 landscape:grid-rows-2
+          landscape:max-w-[min(620px,calc((100dvh-124px)*2.15))] landscape:max-h-[min(100%,360px)] landscape:grid-cols-3 landscape:grid-rows-2 landscape:gap-3
         "
       >
         {PORTAL_GAMES_CONFIG.map((cfg) => (
@@ -220,10 +220,12 @@ export const RegionalGamePortal: React.FC<RegionalGamePortalProps> = ({
             type="button"
             onClick={() => handleCardSelect(cfg.id)}
             className={`
-              group relative flex h-full min-h-0 w-full flex-col items-center justify-between
-              overflow-hidden rounded-[22px] sm:rounded-[26px] border-2 ${cfg.borderClass}
+              group relative flex h-full max-h-[200px] min-h-0 w-full max-w-[210px] aspect-[4/3.6]
+              landscape:max-h-[168px] landscape:max-w-[192px] landscape:aspect-[4/3.35]
+              flex-col items-center justify-between
+              overflow-hidden rounded-[20px] sm:rounded-[24px] border-2 ${cfg.borderClass}
               bg-gradient-to-b ${cfg.cardGradient}
-              px-2.5 pt-2 pb-2.5 sm:px-3.5 sm:pt-2.5 sm:pb-3
+              px-2.5 pt-2 pb-2.5 sm:px-3 sm:pt-2.5 sm:pb-3
               shadow-[0_10px_22px_rgba(25,12,4,0.32),inset_0_1.5px_1px_rgba(255,255,255,0.45)]
               transition-all duration-150 active:scale-[0.98] [@media(hover:hover)]:hover:brightness-105 cursor-pointer
             `}

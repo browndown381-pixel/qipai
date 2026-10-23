@@ -115,6 +115,7 @@ export interface TierCardProps {
 export const TierCard: React.FC<TierCardProps> = ({
   tierCfg,
   spec,
+  isRecommended = false,
   dynamicOnline,
   isPuzzleMode,
   canAfford = true,
@@ -125,21 +126,31 @@ export const TierCard: React.FC<TierCardProps> = ({
       type="button"
       onClick={onClick}
       className={`
-        group relative flex h-full min-h-0 w-full cursor-pointer flex-col items-center justify-between
-        overflow-hidden rounded-[22px] sm:rounded-[26px] border-2 ${spec.borderColor}
+        group relative mx-auto flex h-full max-h-[250px] min-h-0 w-full max-w-[205px] aspect-[3/3.85]
+        landscape:max-h-[225px] landscape:max-w-[166px] landscape:aspect-[3/3.8]
+        cursor-pointer flex-col items-center justify-between
+        overflow-hidden rounded-[20px] sm:rounded-[24px] border-2 ${spec.borderColor}
         bg-gradient-to-b ${spec.cardGradient}
-        px-3 pt-2.5 pb-3 text-center
+        px-3 pt-2.5 pb-2.5 text-center
         shadow-[0_10px_22px_rgba(25,12,4,0.32),inset_0_1.5px_1px_rgba(255,255,255,0.45)]
         transition-all duration-150 active:scale-[0.98] [@media(hover:hover)]:hover:brightness-105
+        ${isRecommended && !isPuzzleMode ? 'ring-2 ring-amber-300/90' : ''}
         ${canAfford ? '' : 'opacity-85'}
       `}
     >
       {/* Top Soft Radial Specular Light */}
       <div className="pointer-events-none absolute inset-x-0 top-0 h-2/3 bg-[radial-gradient(circle_at_50%_20%,rgba(255,255,255,0.22),transparent_70%)]" />
 
-      {/* Top-Right Compact Online Counter */}
-      <div className="relative z-20 flex w-full shrink-0 items-center justify-end">
-        <div className="flex items-center gap-1 rounded-full bg-black/22 px-2.5 py-0.5 text-[10px] sm:text-xs font-bold text-white/95 backdrop-blur-xs">
+      {/* Top Row: Optional Recommended Tag + Compact Online Counter */}
+      <div className="relative z-20 flex w-full shrink-0 items-center justify-between">
+        {isRecommended && !isPuzzleMode ? (
+          <span className="rounded-md bg-amber-300/95 px-1.5 py-0.5 text-[9px] font-black tracking-wider text-[#2b1405] shadow-xs">
+            推荐
+          </span>
+        ) : (
+          <span />
+        )}
+        <div className="flex items-center gap-1 rounded-full bg-black/22 px-2 py-0.5 text-[10px] sm:text-xs font-bold text-white/95 backdrop-blur-xs">
           <img
             src="/assets/ui/icon_online.png"
             alt="在线"

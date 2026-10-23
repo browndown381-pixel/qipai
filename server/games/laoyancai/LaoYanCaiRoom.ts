@@ -339,18 +339,76 @@ export class LaoYanCaiRoom implements IGameRoom {
     if (seatIndex === -1 || !this.seats[seatIndex]) return;
 
     const data = (payload || {}) as Record<string, unknown>;
+    if (event === 'c2s_throw_prop') {
+      const targetSeat = Number(data.targetSeat);
+      const allowedProps = ['flower', 'tea', 'like', 'ingot', 'bomb_cup'];
+      const rawProp = String(data.propType ?? 'flower');
+      const propType = allowedProps.includes(rawProp) ? rawProp : 'flower';
+      if (
+        targetSeat >= 0 &&
+        targetSeat < this.maxPlayers &&
+        targetSeat !== seatIndex &&
+        this.seats[targetSeat]
+      ) {
+        this.seats.forEach((s) => {
+          if (s && !s.isBot) {
+            this.connectionManager.emitToPlayer(s.playerId, 's2c_prop_thrown', {
+              fromSeat: seatIndex,
+              toSeat: targetSeat,
+              propType,
+              fromNickname: this.seats[seatIndex]!.nickname,
+              toNickname: this.seats[targetSeat]!.nickname,
+            });
+          }
+        });
+      }
+      return;
+    }
+
+    if (event === 'c2s_send_chat') {
+      const text = typeof data.text === 'string' ? data.text.slice(0, 40) : '';
+      const emoji = typeof data.emoji === 'string' ? data.emoji.slice(0, 12) : undefined;
+      if (text || emoji) {
+        this.seats.forEach((s) => {
+          if (s && !s.isBot) {
+            this.connectionManager.emitToPlayer(s.playerId, 's2c_chat_message', {
+              playerId,
+              seatIndex,
+              nickname: this.seats[seatIndex]!.nickname,
+              text,
+              emoji,
+            });
+          }
+        });
+      }
+      return;
+    }
+
     if (event === 'c2s_toggle_trusteeship') {
-      this.seats[seatIndex]!.trusteeship =
+      const nextTrust =
         data.trusteeship !== undefined ? Boolean(data.trusteeship) : !this.seats[seatIndex]!.trusteeship;
+      this.seats[seatIndex]!.trusteeship = nextTrust;
+      this.connectionManager.emitToPlayer(playerId, 's2c_trusteeship_changed', {
+        playerId,
+        seatIndex,
+        trusteeship: nextTrust,
+      });
       this.broadcastSnapshot();
-      if (this.seats[seatIndex]!.trusteeship) {
+      if (nextTrust) {
         this.triggerAutoTakeoverIfNeeded(seatIndex);
       }
       return;
     }
 
     this.seats[seatIndex]!.disconnected = false;
-    this.seats[seatIndex]!.trusteeship = false;
+    if (this.seats[seatIndex]!.trusteeship) {
+      this.seats[seatIndex]!.trusteeship = false;
+      this.connectionManager.emitToPlayer(playerId, 's2c_trusteeship_changed', {
+        playerId,
+        seatIndex,
+        trusteeship: false,
+      });
+    }
 
     if (event === 'c2s_lyc_call_banker') {
       this.handleCallBanker(seatIndex, Number(data.callMultiplier ?? 0));

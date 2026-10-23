@@ -1084,12 +1084,23 @@ export class GameScene extends Container {
       propIllustration.stroke({ color: 0xfde047, width: 2 });
       propIllustration.circle(0, -6, 6).fill({ color: 0xfef08a });
     } else if (propType === 'ingot') {
-      propIllustration.ellipse(0, 0, 18, 11).fill({ color: 0xeab308 });
-      propIllustration.stroke({ color: 0xfef08a, width: 2 });
-      propIllustration.circle(0, -2, 6).fill({ color: 0xfef08a });
+      try {
+        const ingotSprite = Sprite.from('/assets/ui/csr_yuanbao_xiao.png');
+        ingotSprite.anchor.set(0.5);
+        ingotSprite.width = 40;
+        ingotSprite.height = 32;
+        flyer.addChild(glow, ingotSprite);
+      } catch {
+        propIllustration.ellipse(0, 0, 18, 11).fill({ color: 0xeab308 });
+        propIllustration.stroke({ color: 0xfef08a, width: 2 });
+        propIllustration.circle(0, -2, 6).fill({ color: 0xfef08a });
+        flyer.addChild(glow, propIllustration);
+      }
     }
 
-    flyer.addChild(glow, propIllustration);
+    if (flyer.children.length === 0) {
+      flyer.addChild(glow, propIllustration);
+    }
     this.effectsLayer.addChild(flyer);
 
     const animObj = { t: 0 };
@@ -1164,6 +1175,19 @@ export class GameScene extends Container {
 
         if (propType === 'bomb_cup') {
           this.triggerScreenShake(9, 0.38);
+        }
+
+        try {
+          const burstSprite = Sprite.from('/assets/ui/fx_light_burst.png');
+          burstSprite.anchor.set(0.5);
+          burstSprite.width = 96;
+          burstSprite.height = 96;
+          burstSprite.alpha = 0.85;
+          burst.addChild(burstSprite);
+          gsap.to(burstSprite.scale, { x: 1.5, y: 1.5, duration: 0.45, ease: 'power2.out' });
+          gsap.to(burstSprite, { rotation: Math.PI * 0.5, alpha: 0, duration: 0.48 });
+        } catch {
+          // Ignore fallback
         }
 
         const shockRing = new Graphics();
@@ -1286,11 +1310,11 @@ export class GameScene extends Container {
 
   /**
    * Commercial 4.0 60fps Skill & Pattern VFX Engine:
-   * - ROCKET (王炸): Dragon Missile Launch -> Sky Dive -> Double Shockwave + Nuclear Flash
-   * - BOMB (炸弹): 3D Iron Sphere Bomb Throw -> Sizzling Fuse -> Shrapnel Explosion
-   * - AIRPLANE* (飞机): 3D Twin-Wing Golden Biplane Flyby with Cloud Contrails
-   * - STRAIGHT / CONSECUTIVE_PAIRS (顺子/连对): Golden Dragon Ribbon Sweep
-   * - SPRING (春天/反春): Full-screen Peach Blossom & Gold Leaf Cascade
+   * - ROCKET (王炸): Dragon Missile Launch -> Sky Dive -> Double Shockwave + Nuclear Flash + Authentic Fire/Burst Sprites
+   * - BOMB (炸弹): 3D Bomb Sprite Throw (/assets/ui/csr_zha.png) -> Sizzling Sparks (/assets/ui/csr_huoxing.png) -> Shrapnel Explosion
+   * - AIRPLANE* (飞机): 3D Twin-Wing Golden Biplane Flyby with Cloud Contrails + Light Burst
+   * - STRAIGHT / CONSECUTIVE_PAIRS (顺子/连对): Golden Dragon Ribbon Sweep + Radial Burst
+   * - SPRING (春天/反春): Authentic Spring Callout Sprite (/assets/ui/sy_chuntian.png) + Full-screen Peach Blossom Cascade
    */
   playPatternEffect(patternType: string, patternLabel: string): void {
     if (
@@ -1340,7 +1364,7 @@ export class GameScene extends Container {
     const cx = this.virtualWidth / 2;
     const cy = 310;
 
-    // Build bespoke vector Dragon Missile
+    // Build bespoke vector Dragon Missile with authentic flame sprite exhaust
     const missile = new Container();
     missile.position.set(cx, DESIGN_HEIGHT + 60);
     const body = new Graphics();
@@ -1374,6 +1398,17 @@ export class GameScene extends Container {
       .closePath()
       .fill({ color: 0xfef08a });
     missile.addChild(body);
+
+    try {
+      const fireTail = Sprite.from('/assets/ui/csr_huo.png');
+      fireTail.anchor.set(0.5, 0);
+      fireTail.y = 14;
+      fireTail.scale.set(0.85);
+      missile.addChild(fireTail);
+    } catch {
+      // Fallback vector exhaust already present
+    }
+
     fx.addChild(missile);
 
     // Phase 1: Ascend into the sky
@@ -1402,7 +1437,7 @@ export class GameScene extends Container {
   }
 
   /**
-   * 2. BOMB (炸弹) — 3D Iron Sphere Bomb Arc, Sizzling Fuse & Shrapnel Explosion
+   * 2. BOMB (炸弹) — Authentic Bomb Sprite (/assets/ui/csr_zha.png) + Spark (/assets/ui/csr_huoxing.png) & Shrapnel Explosion
    */
   private playBombFuseBlastEffect(patternLabel: string): void {
     const fx = new Container();
@@ -1414,19 +1449,33 @@ export class GameScene extends Container {
     const bomb = new Container();
     bomb.position.set(cx - 180, cy + 120);
 
-    const sphere = new Graphics();
-    sphere
-      .circle(0, 0, 28)
-      .fill({ color: 0x18181b })
-      .stroke({ width: 2.5, color: 0xf59e0b });
-    sphere.circle(-9, -9, 7).fill({ color: 0x52525b, alpha: 0.7 });
-    // Fuse cord & spark
-    sphere
-      .moveTo(14, -20)
-      .quadraticCurveTo(26, -34, 32, -26)
-      .stroke({ width: 3, color: 0xd97706 });
-    sphere.circle(32, -26, 6).fill({ color: 0xfef08a });
-    bomb.addChild(sphere);
+    try {
+      const bombSprite = Sprite.from('/assets/ui/csr_zha.png');
+      bombSprite.anchor.set(0.5);
+      bombSprite.scale.set(0.95);
+      bomb.addChild(bombSprite);
+
+      const sparkSprite = Sprite.from('/assets/ui/csr_huoxing.png');
+      sparkSprite.anchor.set(0.5);
+      sparkSprite.position.set(22, -26);
+      sparkSprite.scale.set(0.9);
+      bomb.addChild(sparkSprite);
+      gsap.to(sparkSprite.scale, { x: 1.35, y: 1.35, duration: 0.08, yoyo: true, repeat: 3 });
+    } catch {
+      const sphere = new Graphics();
+      sphere
+        .circle(0, 0, 28)
+        .fill({ color: 0x18181b })
+        .stroke({ width: 2.5, color: 0xf59e0b });
+      sphere.circle(-9, -9, 7).fill({ color: 0x52525b, alpha: 0.7 });
+      sphere
+        .moveTo(14, -20)
+        .quadraticCurveTo(26, -34, 32, -26)
+        .stroke({ width: 3, color: 0xd97706 });
+      sphere.circle(32, -26, 6).fill({ color: 0xfef08a });
+      bomb.addChild(sphere);
+    }
+
     fx.addChild(bomb);
 
     // Throw arc to center
@@ -1440,8 +1489,8 @@ export class GameScene extends Container {
         if (fx.destroyed) return;
         // Pulse twice then detonate
         gsap.to(bomb.scale, {
-          x: 1.32,
-          y: 1.32,
+          x: 1.35,
+          y: 1.35,
           duration: 0.14,
           onComplete: () => {
             if (fx.destroyed) return;
@@ -1469,9 +1518,39 @@ export class GameScene extends Container {
     const flash = new Graphics();
     flash
       .rect(-cx, -cy, this.virtualWidth, DESIGN_HEIGHT)
-      .fill({ color: isNuclear ? 0xef4444 : 0xf59e0b, alpha: 0.26 });
+      .fill({ color: isNuclear ? 0xef4444 : 0xf59e0b, alpha: 0.28 });
     centerNode.addChild(flash);
-    gsap.to(flash, { alpha: 0, duration: 0.35 });
+    gsap.to(flash, { alpha: 0, duration: 0.38 });
+
+    // Authentic Radial Light Burst Sprite + Flame Core
+    try {
+      const lightBurst = Sprite.from('/assets/ui/fx_light_burst.png');
+      lightBurst.anchor.set(0.5);
+      lightBurst.width = isNuclear ? 420 : 340;
+      lightBurst.height = isNuclear ? 420 : 340;
+      lightBurst.alpha = 0.92;
+      centerNode.addChild(lightBurst);
+      gsap.fromTo(
+        lightBurst.scale,
+        { x: 0.35, y: 0.35 },
+        { x: isNuclear ? 1.85 : 1.45, y: isNuclear ? 1.85 : 1.45, duration: 0.58, ease: 'power2.out' }
+      );
+      gsap.to(lightBurst, { rotation: Math.PI * 0.4, alpha: 0, duration: 0.65 });
+
+      const flameCore = Sprite.from('/assets/ui/csr_huo.png');
+      flameCore.anchor.set(0.5);
+      flameCore.scale.set(isNuclear ? 1.65 : 1.25);
+      centerNode.addChild(flameCore);
+      gsap.to(flameCore.scale, {
+        x: isNuclear ? 2.4 : 1.85,
+        y: isNuclear ? 2.4 : 1.85,
+        duration: 0.48,
+        ease: 'power2.out',
+      });
+      gsap.to(flameCore, { alpha: 0, duration: 0.52 });
+    } catch {
+      // Fallback vector rings below still run
+    }
 
     // Double Shockwave Rings
     for (let r = 0; r < 2; r++) {
@@ -1482,15 +1561,15 @@ export class GameScene extends Container {
       });
       centerNode.addChild(ring);
       gsap.to(ring.scale, {
-        x: isNuclear ? 5.2 : 4.2,
-        y: isNuclear ? 5.2 : 4.2,
-        duration: 0.6 + r * 0.12,
+        x: isNuclear ? 5.4 : 4.4,
+        y: isNuclear ? 5.4 : 4.4,
+        duration: 0.62 + r * 0.12,
         ease: 'power2.out',
       });
-      gsap.to(ring, { alpha: 0, duration: 0.6 + r * 0.12 });
+      gsap.to(ring, { alpha: 0, duration: 0.62 + r * 0.12 });
     }
 
-    // 28 Shrapnel Sparks
+    // Shrapnel Sparks
     const total = isNuclear ? 32 : 26;
     for (let i = 0; i < total; i++) {
       const p = new Graphics();
@@ -1517,7 +1596,7 @@ export class GameScene extends Container {
 
     gsap.to(fx, {
       alpha: 0,
-      delay: 0.82,
+      delay: 0.85,
       duration: 0.28,
       onComplete: () => this.cleanupFxNode(fx),
     });
@@ -1573,12 +1652,24 @@ export class GameScene extends Container {
   }
 
   /**
-   * 4. STRAIGHT / CONSECUTIVE PAIRS (顺子 / 连对) — Golden Dragon Ribbon & Starlight
+   * 4. STRAIGHT / CONSECUTIVE PAIRS (顺子 / 连对) — Golden Dragon Ribbon & Radial Light Burst
    */
   private playGoldenDragonRibbonEffect(patternLabel: string): void {
     const fx = new Container();
     fx.position.set(this.virtualWidth / 2, 305);
     this.effectsLayer.addChild(fx);
+
+    try {
+      const burst = Sprite.from('/assets/ui/fx_light_burst.png');
+      burst.anchor.set(0.5);
+      burst.width = 260;
+      burst.height = 260;
+      burst.alpha = 0.75;
+      fx.addChild(burst);
+      gsap.to(burst, { rotation: Math.PI * 0.5, alpha: 0, duration: 0.85 });
+    } catch {
+      // Ignore fallback
+    }
 
     const ribbon = new Graphics();
     ribbon
@@ -1619,7 +1710,7 @@ export class GameScene extends Container {
   }
 
   /**
-   * 5. SPRING (春天 / 反春) — Full-Screen Peach Blossom & Gold Foil Cascade
+   * 5. SPRING (春天 / 反春) — Authentic Spring Callout Sprite (/assets/ui/sy_chuntian.png) + Full-Screen Peach Blossom Cascade
    */
   private playSpringBlossomEffect(patternLabel: string): void {
     const fx = new Container();
@@ -1643,11 +1734,28 @@ export class GameScene extends Container {
       });
     }
 
-    const banner = this.createSkillBanner(patternLabel, 0x9d174d);
-    banner.position.set(this.virtualWidth / 2, 300);
-    banner.scale.set(0.3);
-    fx.addChild(banner);
-    gsap.to(banner.scale, { x: 1.2, y: 1.2, duration: 0.3, ease: 'back.out(2)' });
+    const centerCallout = new Container();
+    centerCallout.position.set(this.virtualWidth / 2, 295);
+    centerCallout.scale.set(0.3);
+    fx.addChild(centerCallout);
+
+    try {
+      const burst = Sprite.from('/assets/ui/fx_light_burst.png');
+      burst.anchor.set(0.5);
+      burst.width = 320;
+      burst.height = 320;
+      centerCallout.addChild(burst);
+      gsap.to(burst, { rotation: Math.PI * 0.6, duration: 1.4 });
+
+      const springSprite = Sprite.from('/assets/ui/sy_chuntian.png');
+      springSprite.anchor.set(0.5);
+      centerCallout.addChild(springSprite);
+    } catch {
+      const banner = this.createSkillBanner(patternLabel, 0x9d174d);
+      centerCallout.addChild(banner);
+    }
+
+    gsap.to(centerCallout.scale, { x: 1.15, y: 1.15, duration: 0.32, ease: 'back.out(2)' });
 
     gsap.to(fx, {
       alpha: 0,

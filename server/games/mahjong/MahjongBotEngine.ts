@@ -12,24 +12,45 @@ import {
   calculateOptimalDiscard,
   getLegalDiscards,
 } from '../../../src/games/mahjong/algorithms/MahjongRules';
+import {
+  shouldAIGang,
+  shouldAIPeng,
+} from '../../../src/games/mahjong/algorithms/MahjongAI';
 
 export class MahjongBotEngine {
   /**
-   * 智能定缺策略：统计万、条、筒三门牌数量与面子连贯性，定最弱的一门
+   * 智能定缺策略：综合评估万、条、筒三门牌的张数与内部刻子/对子/顺子搭子结构，定结构最弱的一门
    */
   static decideDingQue(handTiles: number[], mode: string = 'hongzhong'): MahjongSuit {
-    const suitCounts: Record<0 | 1 | 2, number> = { 0: 0, 1: 0, 2: 0 };
+    const suitScores: Record<0 | 1 | 2, number> = { 0: 0, 1: 0, 2: 0 };
+    const suitRankCounts: Record<0 | 1 | 2, number[]> = {
+      0: new Array(10).fill(0),
+      1: new Array(10).fill(0),
+      2: new Array(10).fill(0),
+    };
 
     for (const t of handTiles) {
       if (isWildcard(t, mode)) continue;
       const s = getSuit(t);
-      if (s >= 0 && s <= 2) {
-        suitCounts[s as 0 | 1 | 2] += 1;
+      const r = getRank(t);
+      if ((s === 0 || s === 1 || s === 2) && r >= 1 && r <= 9) {
+        suitScores[s] += 10;
+        suitRankCounts[s][r] += 1;
+      }
+    }
+
+    for (const s of [0, 1, 2] as const) {
+      const counts = suitRankCounts[s];
+      for (let r = 1; r <= 9; r++) {
+        if (counts[r] >= 3) suitScores[s] += 16; // 刻子权重高，不轻易定缺
+        else if (counts[r] === 2) suitScores[s] += 7; // 对子加权
+        if (r <= 8 && counts[r] > 0 && counts[r + 1] > 0) suitScores[s] += 4; // 连张搭子
+        if (r <= 7 && counts[r] > 0 && counts[r + 2] > 0) suitScores[s] += 2; // 嵌张搭子
       }
     }
 
     const suits: Array<0 | 1 | 2> = [0, 1, 2];
-    suits.sort((a, b) => suitCounts[a] - suitCounts[b]);
+    suits.sort((a, b) => suitScores[a] - suitScores[b]);
 
     return suits[0];
   }
@@ -37,7 +58,7 @@ export class MahjongBotEngine {
   /**
    * 商业级打牌决策：
    * 1. 严格遵守打缺规则：若有定缺牌，先打散张定缺牌；
-   * 2. 无定缺牌时，调用 34 维向听数 + 真实可见有效进张(Ukeire) + 牌河危险度综合估值引擎。
+   * 2. 无定缺牌时，调用 34 维向听数 + 真实可见有效进张(Ukeire) + 筋壁牌河危险度综合估值引擎。
    */
   static decideDiscard(
     handTiles: number[],
@@ -93,10 +114,14 @@ export class MahjongBotEngine {
   }
 
   /**
-   * 商业级响应决策 (吃/碰/杠/胡/过)
+   * 商业级响应决策 (吃/碰/杠/胡/过)：
+   * 结合手牌向听数评估，杜绝破坏门清听牌或恶化向听数的盲目碰杠
    */
   static decideAction(
-    availableActions: AvailableAction[]
+    availableActions: AvailableAction[],
+    handTiles?: number[],
+    meldsCount: number = 0,
+    mode: string = 'puer'
   ): AvailableAction | null {
     if (!availableActions || availableActions.length === 0) return null;
 
@@ -104,14 +129,20 @@ export class MahjongBotEngine {
     const huAct = availableActions.find((a) => a.actionType === 'hu');
     if (huAct) return huAct;
 
-    // 2. 开杠：刮风下雨抢分
+    // 2. 开杠：在不破坏已有听牌结构的前提下刮风下雨抢分
     const gangAct = availableActions.find((a) => a.actionType === 'gang');
-    if (gangAct) return gangAct;
+    if (gangAct) {
+      if (!handTiles || shouldAIGang(handTiles, gangAct.targetTile, meldsCount, mode)) {
+        return gangAct;
+      }
+    }
 
-    // 3. 碰牌：推进听牌
+    // 3. 碰牌：仅当碰牌能加快向听推进或维持高质量听牌时才碰
     const pengAct = availableActions.find((a) => a.actionType === 'peng');
     if (pengAct) {
-      return pengAct;
+      if (!handTiles || shouldAIPeng(handTiles, pengAct.targetTile, meldsCount, mode)) {
+        return pengAct;
+      }
     }
 
     return null;

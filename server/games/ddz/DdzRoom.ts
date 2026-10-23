@@ -322,12 +322,16 @@ export class DdzRoom implements IGameRoom {
       }
       case 'c2s_throw_prop': {
         const targetSeat = Number(data.targetSeat);
-        const propType = String(data.propType ?? 'flower');
-        if ([0, 1, 2].includes(targetSeat) && targetSeat !== seat) {
+        const allowedProps = ['flower', 'tea', 'like', 'ingot', 'egg', 'slipper', 'bomb_cup'];
+        const rawProp = String(data.propType ?? 'flower');
+        const propType = allowedProps.includes(rawProp) ? rawProp : 'flower';
+        if ([0, 1, 2].includes(targetSeat) && targetSeat !== seat && this.seats[targetSeat]) {
           this.broadcastToRoom('s2c_prop_thrown', {
             fromSeat: seat,
             toSeat: targetSeat,
             propType,
+            fromNickname: seatPlayer.nickname,
+            toNickname: this.seats[targetSeat]!.nickname,
           });
         }
         break;
@@ -336,6 +340,11 @@ export class DdzRoom implements IGameRoom {
         const enabled =
           typeof data.trusteeship === 'boolean' ? data.trusteeship : !seatPlayer.trusteeship;
         seatPlayer.trusteeship = enabled;
+        this.connectionManager.emitToPlayer(seatPlayer.playerId, 's2c_trusteeship_changed', {
+          playerId: seatPlayer.playerId,
+          seatIndex: seat,
+          trusteeship: enabled,
+        });
         this.broadcastRoomState();
         if (
           enabled &&

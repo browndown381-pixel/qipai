@@ -21,6 +21,7 @@ import { type ViewportMetrics } from '../../App';
 import { soundEngine } from '../../shared/audio/SoundEngine';
 import { hapticEngine } from '../../shared/haptics/HapticEngine';
 import { socketClient } from '../../shared/network/SocketClient';
+import { effectCoordinator, EffectPriority } from '../../shared/EffectCoordinator';
 import { AvatarSvg } from '../../shared/ui/AvatarSvg';
 import {
   AvailableAction,
@@ -233,6 +234,39 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
       }
     }
 
+    const scheduleMahjongGlow = (glowPayload: {
+      action: 'chi' | 'peng' | 'gang' | 'hu' | 'zimo';
+      relativeSeat?: number;
+      subType?: 'guafeng' | 'xiayu';
+      fanNames?: string[];
+    }) => {
+      const priority =
+        glowPayload.action === 'zimo'
+          ? EffectPriority.ULTIMATE
+          : glowPayload.action === 'hu'
+            ? EffectPriority.CRITICAL
+            : glowPayload.action === 'gang'
+              ? EffectPriority.MAJOR
+              : EffectPriority.NORMAL;
+      const durationMs =
+        glowPayload.action === 'zimo' || glowPayload.action === 'hu' ? 1420 : 1080;
+
+      effectCoordinator.enqueue({
+        sceneId: 'mahjong',
+        type: `mj_${glowPayload.action}`,
+        priority,
+        useGlobalMask: false,
+        durationMs,
+        preemptLowerPriority: priority >= EffectPriority.CRITICAL,
+        onStart: () => {
+          setActiveActionGlow(glowPayload);
+          return () => {
+            setActiveActionGlow((prev) => (prev === glowPayload ? null : prev));
+          };
+        },
+      });
+    };
+
     // 4. Meld Action Voice Callout (e.g. 碰 / 吃)
     snapshot.players.forEach((p, sId) => {
       const meldsCount = p.melds?.length || 0;
@@ -244,7 +278,7 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
           const gender = isFemale ? 'female' : 'male';
           const actType = latestMeld.type === 'chi' ? 'chi' : 'peng';
           soundEngine.playActionVoice('peng', gender);
-          setActiveActionGlow({
+          scheduleMahjongGlow({
             action: actType,
             relativeSeat: relSeat,
           });
@@ -279,7 +313,7 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
 
       if (latestBill.eventType === 'zimo') {
         soundEngine.playActionVoice('zimo', gender);
-        setActiveActionGlow({
+        scheduleMahjongGlow({
           action: 'zimo',
           relativeSeat: winnerRelSeat,
           fanNames: billFanNames,
@@ -297,7 +331,7 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
         });
       } else if (latestBill.eventType === 'dianpao' || latestBill.eventType === 'qianggang') {
         soundEngine.playActionVoice('hu', gender);
-        setActiveActionGlow({
+        scheduleMahjongGlow({
           action: 'hu',
           relativeSeat: winnerRelSeat,
           fanNames: billFanNames,
@@ -315,7 +349,7 @@ export const MahjongTableView: React.FC<MahjongTableViewProps> = ({
         });
       } else if (latestBill.eventType === 'guafeng' || latestBill.eventType === 'xiayu') {
         soundEngine.playActionVoice('gang', gender);
-        setActiveActionGlow({
+        scheduleMahjongGlow({
           action: 'gang',
           relativeSeat: winnerRelSeat,
           subType: latestBill.eventType,

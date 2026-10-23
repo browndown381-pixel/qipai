@@ -19,6 +19,11 @@ import {
 import { soundEngine } from '../audio/SoundEngine';
 import { hapticEngine } from '../haptics/HapticEngine';
 import { socketClient } from '../network/SocketClient';
+import {
+  effectCoordinator,
+  EffectPriority,
+  useEffectCoordinator,
+} from '../EffectCoordinator';
 
 export interface SharedTableHudOverlayProps {
   activeRoomId: string | null;
@@ -155,10 +160,16 @@ export const SharedTableHudOverlay: React.FC<SharedTableHudOverlayProps> = ({
 
   const totalSeats = gameType === 'mahjong' ? 4 : gameType === 'ddz' ? 3 : 5;
   const isDdz = gameType === 'ddz';
+  const coordinatorSnap = useEffectCoordinator();
 
   useEffect(() => {
     setIsTrusteeship(false);
     setShowChatMenu(false);
+    const sceneKey = gameType || 'hall';
+    effectCoordinator.setActiveScene(sceneKey);
+    return () => {
+      effectCoordinator.clearScene(sceneKey);
+    };
   }, [activeRoomId, gameType]);
 
   useEffect(() => {
@@ -302,8 +313,6 @@ export const SharedTableHudOverlay: React.FC<SharedTableHudOverlayProps> = ({
         }) => {
           // DdzTableView has its own seat-bound prop animation layer
           if (gameType === 'ddz') return;
-          soundEngine.playPowerChime(1);
-          hapticEngine.tap();
 
           const fromRel = (evt.fromSeat - mySeatIndex + totalSeats) % totalSeats;
           const toRel = (evt.toSeat - mySeatIndex + totalSeats) % totalSeats;
@@ -329,10 +338,23 @@ export const SharedTableHudOverlay: React.FC<SharedTableHudOverlayProps> = ({
             endX: endPos.x,
             endY: endPos.y,
           };
-          setFlyingProps((prev) => [...prev.slice(-4), item]);
-          window.setTimeout(() => {
-            setFlyingProps((prev) => prev.filter((p) => p.id !== id));
-          }, 1350);
+
+          effectCoordinator.enqueue({
+            id,
+            sceneId: gameType || 'table',
+            type: 'prop_throw',
+            priority: EffectPriority.AMBIENT,
+            channel: 'ambient',
+            durationMs: 1350,
+            onStart: () => {
+              soundEngine.playPowerChime(1);
+              hapticEngine.tap();
+              setFlyingProps((prev) => [...prev.slice(-4), item]);
+              return () => {
+                setFlyingProps((prev) => prev.filter((p) => p.id !== id));
+              };
+            },
+          });
         }
       )
     );
@@ -426,6 +448,21 @@ export const SharedTableHudOverlay: React.FC<SharedTableHudOverlayProps> = ({
           }
         }
       `}</style>
+
+      {/* 0. Unified EffectCoordinator Backdrop Mask Layer (prevents multi-overlay darkening conflicts) */}
+      {coordinatorSnap.maskConfig.level !== 'none' && (
+        <div
+          className="pointer-events-none fixed inset-0 transition-opacity duration-200"
+          style={{
+            backgroundColor: coordinatorSnap.maskConfig.tintColor,
+            backdropFilter:
+              coordinatorSnap.maskConfig.blurPx > 0
+                ? `blur(${coordinatorSnap.maskConfig.blurPx}px)`
+                : undefined,
+            zIndex: coordinatorSnap.maskConfig.zIndex,
+          }}
+        />
+      )}
 
       {/* 1. Top-Center Silent Reconnection Banner */}
       {isReconnecting && (

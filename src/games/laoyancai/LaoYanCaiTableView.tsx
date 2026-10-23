@@ -12,6 +12,7 @@ import { ViewportMetrics } from '../../App';
 import { soundEngine } from '../../shared/audio/SoundEngine';
 import { hapticEngine } from '../../shared/haptics/HapticEngine';
 import { socketClient } from '../../shared/network/SocketClient';
+import { effectCoordinator, EffectPriority } from '../../shared/EffectCoordinator';
 import { AutoLandscapeContainer } from '../../shared/components/AutoLandscapeContainer';
 import {
   LaoYanCaiCard,
@@ -103,6 +104,7 @@ export const LaoYanCaiTableView: React.FC<LaoYanCaiTableViewProps> = ({
       window.clearTimeout(t);
     }
     ceremonyTimersRef.current = [];
+    effectCoordinator.clearScene('laoyancai');
   }, []);
 
   useEffect(() => {
@@ -466,15 +468,26 @@ export const LaoYanCaiTableView: React.FC<LaoYanCaiTableViewProps> = ({
     );
 
     if (visualCeremonies.length > 0) {
-      visualCeremonies.slice(0, 2).forEach((item, idx) => {
-        const startDelay = idx * 1150;
-        const showTimer = window.setTimeout(() => {
-          setActiveCeremony(item);
-        }, startDelay);
-        const endTimer = window.setTimeout(() => {
-          setActiveCeremony((prev) => (prev?.id === item.id ? null : prev));
-        }, startDelay + 1100);
-        ceremonyTimersRef.current.push(showTimer, endTimer);
+      visualCeremonies.slice(0, 2).forEach((item) => {
+        const priority =
+          item.category === 'BAOZI'
+            ? EffectPriority.ULTIMATE
+            : EffectPriority.CRITICAL;
+        effectCoordinator.enqueue({
+          sceneId: 'laoyancai',
+          type: `lyc_${item.category.toLowerCase()}`,
+          label: item.handName,
+          priority,
+          useGlobalMask: false,
+          durationMs: 1120,
+          preemptLowerPriority: false,
+          onStart: () => {
+            setActiveCeremony(item);
+            return () => {
+              setActiveCeremony((prev) => (prev?.id === item.id ? null : prev));
+            };
+          },
+        });
       });
     }
   }, [activeSnapshot, clearCeremonyTimers]);

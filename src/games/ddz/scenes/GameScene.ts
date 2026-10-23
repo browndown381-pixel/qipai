@@ -2,6 +2,7 @@ import { Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Text } f
 import gsap from 'gsap';
 import { soundEngine } from '../../../shared/audio/SoundEngine';
 import { hapticEngine } from '../../../shared/haptics/HapticEngine';
+import { effectCoordinator, EffectPriority } from '../../../shared/EffectCoordinator';
 import { CARD_HEIGHT, CARD_WIDTH, getCardBackTexturePath } from '../assets/CardAtlasGenerator';
 import { Card } from '../components/Card';
 import { HandManager } from '../managers/HandManager';
@@ -1009,6 +1010,25 @@ export class GameScene extends Container {
   ): void {
     if (this.destroyed || !this.effectsLayer || this.effectsLayer.destroyed) return;
 
+    effectCoordinator.enqueue({
+      sceneId: 'ddz',
+      type: `ddz_prop_${propType}`,
+      priority: EffectPriority.AMBIENT,
+      channel: 'ambient',
+      durationMs: 1400,
+      onStart: () => {
+        this.executePropThrowEffect(fromRel, toRel, propType);
+      },
+    });
+  }
+
+  private executePropThrowEffect(
+    fromRel: 'bottom' | 'left' | 'right',
+    toRel: 'bottom' | 'left' | 'right',
+    propType: PropType
+  ): void {
+    if (this.destroyed || !this.effectsLayer || this.effectsLayer.destroyed) return;
+
     const coords: Record<'bottom' | 'left' | 'right', { x: number; y: number }> = {
       bottom: { x: 130, y: 690 },
       left: { x: 140, y: 140 },
@@ -1332,26 +1352,89 @@ export class GameScene extends Container {
     }
 
     if (patternType === 'ROCKET') {
-      hapticEngine.rocketBlast();
-      this.playRocketMissileEffect(patternLabel);
+      effectCoordinator.enqueue({
+        sceneId: 'ddz',
+        type: 'ddz_rocket',
+        label: patternLabel,
+        priority: EffectPriority.ULTIMATE,
+        maskLevel: 'heavy',
+        useGlobalMask: true,
+        durationMs: 1650,
+        preemptLowerPriority: true,
+        onStart: () => {
+          if (this.destroyed) return;
+          hapticEngine.rocketBlast();
+          this.playRocketMissileEffect(patternLabel);
+        },
+      });
       return;
     }
     if (patternType === 'BOMB') {
-      hapticEngine.bombBlast();
-      this.playBombFuseBlastEffect(patternLabel);
+      effectCoordinator.enqueue({
+        sceneId: 'ddz',
+        type: 'ddz_bomb',
+        label: patternLabel,
+        priority: EffectPriority.CRITICAL,
+        maskLevel: 'medium',
+        useGlobalMask: true,
+        durationMs: 1450,
+        preemptLowerPriority: true,
+        onStart: () => {
+          if (this.destroyed) return;
+          hapticEngine.bombBlast();
+          this.playBombFuseBlastEffect(patternLabel);
+        },
+      });
       return;
     }
     if (patternType.startsWith('AIRPLANE')) {
-      this.playBiplaneFlybyEffect(patternLabel);
+      effectCoordinator.enqueue({
+        sceneId: 'ddz',
+        type: 'ddz_airplane',
+        label: patternLabel,
+        priority: EffectPriority.MAJOR,
+        maskLevel: 'subtle',
+        useGlobalMask: true,
+        durationMs: 1250,
+        onStart: () => {
+          if (this.destroyed) return;
+          this.playBiplaneFlybyEffect(patternLabel);
+        },
+      });
       return;
     }
     if (patternType === 'SPRING') {
-      this.playSpringBlossomEffect(patternLabel);
+      effectCoordinator.enqueue({
+        sceneId: 'ddz',
+        type: 'ddz_spring',
+        label: patternLabel,
+        priority: EffectPriority.ULTIMATE,
+        maskLevel: 'medium',
+        useGlobalMask: true,
+        durationMs: 2200,
+        preemptLowerPriority: true,
+        onStart: () => {
+          if (this.destroyed) return;
+          this.playSpringBlossomEffect(patternLabel);
+        },
+      });
       return;
     }
 
     // Default: Straight / Consecutive Pairs / Four-with-Two Golden Dragon Streamer
-    this.playGoldenDragonRibbonEffect(patternLabel);
+    effectCoordinator.enqueue({
+      sceneId: 'ddz',
+      type: 'ddz_ribbon',
+      label: patternLabel,
+      priority: EffectPriority.MAJOR,
+      maskLevel: 'none',
+      useGlobalMask: false,
+      durationMs: 920,
+      onStart: () => {
+        if (this.destroyed) return;
+        this.playGoldenDragonRibbonEffect(patternLabel);
+      },
+    });
   }
 
   /**
@@ -1881,6 +1964,7 @@ export class GameScene extends Container {
 
   destroyScene(): void {
     this.stopCountdown();
+    effectCoordinator.clearScene('ddz');
     if (!this.destroyed) {
       this.killTweensRecursively(this);
       this.handManager.clearHand();
